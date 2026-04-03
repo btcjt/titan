@@ -8,8 +8,8 @@ pub const MAX_NAME_LEN: usize = 41;
 /// Minimum name length.
 pub const MIN_NAME_LEN: usize = 1;
 
-/// Protocol magic bytes: "TITN" (0x5449544E).
-pub const MAGIC: [u8; 4] = [0x54, 0x49, 0x54, 0x4E];
+/// Protocol magic bytes: "NSIT" (0x4E534954).
+pub const MAGIC: [u8; 4] = [0x4E, 0x53, 0x49, 0x54];
 
 /// Current protocol version.
 pub const VERSION: u8 = 0x01;

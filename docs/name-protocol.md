@@ -7,7 +7,7 @@ Technical specification for the Bitcoin OP_RETURN name registration protocol.
 ```
 Offset  Size  Field       Value/Range          Description
 ------  ----  -----       -----------          -----------
-0       4     magic       0x5449544E           ASCII "TITN"
+0       4     magic       0x4E534954           ASCII "NSIT"
 4       1     version     0x01                 Protocol version
 5       1     action      0x00 | 0x01          Register or Transfer
 6       1     name_len    0x01-0x29 (1-41)     Name length in bytes
@@ -52,7 +52,7 @@ Updates the pubkey associated with a name.
 
 ### Block Processing
 
-For each block, iterate transactions in order. For each transaction, check all outputs for OP_RETURN scripts. Attempt to decode using the TITN magic prefix.
+For each block, iterate transactions in order. For each transaction, check all outputs for OP_RETURN scripts. Attempt to decode using the NSIT magic prefix.
 
 ### Conflict Resolution
 
@@ -74,8 +74,8 @@ For MVP, handle depth-1 reorgs. Deeper reorgs require scanning back to the fork 
 ### Registering "westernbtc"
 
 ```
-OP_RETURN: 5449544e 01 00 0a 776573746572 6e627463 <32-byte pubkey>
-           TITN     v1 reg 10 w e s t e r n b t c
+OP_RETURN: 4e534954 01 00 0a 776573746572 6e627463 <32-byte pubkey>
+           NSIT     v1 reg 10 w e s t e r n b t c
 ```
 
 Total: 49 bytes (39 overhead + 10 name bytes)

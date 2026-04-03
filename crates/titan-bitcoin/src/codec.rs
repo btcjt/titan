@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! Offset  Size  Field       Description
-//! 0       4     magic       "TITN" (0x5449544E)
+//! 0       4     magic       "NSIT" (0x4E534954)
 //! 4       1     version     0x01
 //! 5       1     action      0x00=register, 0x01=transfer
 //! 6       1     name_len    1-41

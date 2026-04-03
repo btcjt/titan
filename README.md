@@ -26,18 +26,40 @@ Rendered in native webview
 
 Type a name, get a website. No DNS. No ICANN. No certificates. No hosting providers.
 
+## Why
+
+Nostr gives everyone a cryptographic identity — a public key. But public keys look like this:
+
+```
+npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
+```
+
+Nobody can remember that. Nobody can type it. Nobody is putting that on a business card.
+
+The traditional web solved this problem with domain names — but domain names are controlled by ICANN, can be seized by governments, expire if you miss a payment, and cost money every year. Current nsite gateways just move the npub into a subdomain (`npub1qe3e....gateway.com`), which doesn't solve readability and reintroduces DNS as a single point of failure.
+
+Titan replaces all of that. Register a name once on Bitcoin for ~$0.10. It's yours forever. No renewals. No registrar. No one can take it from you.
+
+```
+nsite://westernbtc
+```
+
+That's it. Simple enough to say out loud, short enough for a billboard, permanent as the blockchain.
+
+**Names are first-come, first-served, and permanent.** There are only 36 possible single-character names. Only ~1,300 two-character names. Words like `bitcoin`, `wallet`, `news`, `shop` — each can only be claimed once, ever. There is no expiration, no appeals process, no second chance. Early movers win.
+
 ## The Name Protocol
 
 Titan introduces a Bitcoin-native name system using OP_RETURN transactions. Names are permanent, first-in-chain-wins, and transferable.
 
 ```
 OP_RETURN payload (80 bytes max):
-  TITN  01  00  0a  westernbtc  <32-byte pubkey>
+  NSIT  01  00  0a  westernbtc   <32-byte pubkey>
   ^^^^  ^^  ^^  ^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^^^
   magic ver act len name        x-only Schnorr key
 ```
 
-- **Register**: First valid `TITN` OP_RETURN for a name claims it forever
+- **Register**: First valid `NSIT` OP_RETURN for a name claims it forever
 - **Transfer**: Spend from the registration address with a new pubkey
 - **Names**: `a-z`, `0-9`, hyphens. 1-41 characters. Lowercase only.
 

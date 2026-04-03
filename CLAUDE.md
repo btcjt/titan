@@ -33,7 +33,7 @@ OP_RETURN wire format (80 bytes max):
 
 ```
 Offset  Size  Field       Description
-0       4     magic       "TITN" (0x5449544E)
+0       4     magic       "NSIT" (0x4E534954)
 4       1     version     0x01
 5       1     action      0x00=register, 0x01=transfer
 6       1     name_len    1-41
@@ -72,10 +72,10 @@ Blossom: https://blossom.westernbtc.com, https://nostr.build
 ## Build Phases
 
 1. ~~Types + OP_RETURN codec~~ (DONE — 13 tests passing)
-2. Bitcoin RPC client + SQLite store (NEXT)
-3. Block scanner / indexer
-4. Nostr resolver (relays + Blossom)
-5. Tauri browser shell + protocol handler
+2. ~~Bitcoin RPC client + SQLite store~~ (DONE — 26 tests passing)
+3. ~~Block scanner / indexer~~ (DONE — 33 tests passing)
+4. ~~Nostr resolver (relays + Blossom)~~ (DONE — 47 tests passing)
+5. Tauri browser shell + protocol handler (NEXT)
 6. Integration + error states
 7. Distribution (dmg/AppImage/msi, GitHub Actions)
 
@@ -86,7 +86,7 @@ Blossom: https://blossom.westernbtc.com, https://nostr.build
 - Bitcoin Core RPC over Electrum (user already runs a node)
 - Embedded indexer in app (no separate server for MVP)
 - x-only 32-byte pubkeys (matches Nostr, saves 1 byte vs compressed)
-- "TITN" 4-byte magic prefix
+- "NSIT" 4-byte magic prefix (protocol name, not browser name)
 - SQLite with bundled feature (no system dependency)
 - `nsite://` scheme (protocol name, not browser name — other browsers could implement)
 

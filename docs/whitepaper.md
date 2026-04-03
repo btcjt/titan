@@ -15,9 +15,54 @@ The current web depends on centralized chokepoints:
 - **Hosting providers** — a company can deplatform any site at any time
 - **Browsers** — four corporations control how the web renders
 
-NIP-5A (nsite v2) solves the hosting and serving layer by storing website content on Blossom blob servers and indexing it through Nostr relay events. But it leaves name resolution unsolved — existing nsite gateways use subdomain-based addressing (`<npub>.gateway.com`), which still depends on DNS for the gateway itself.
+NIP-5A (nsite v2) solves the hosting and serving layer by storing website content on Blossom blob servers and indexing it through Nostr relay events. But it leaves a critical gap: **name resolution**.
 
-Titan completes the stack by adding Bitcoin-permanent name resolution and a native browser that bypasses the traditional web entirely.
+### 1.1 The npub Problem
+
+Every Nostr identity is a public key. In its human-readable form, an npub looks like this:
+
+```
+npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
+```
+
+This is 63 characters of seemingly random letters and numbers. It is:
+
+- **Impossible to remember** — no human can memorize or type this reliably
+- **Error-prone** — a single wrong character points to a different identity (or no identity at all)
+- **Unshareable** — you can't tell someone your address over the phone, print it on a business card, or say it in conversation
+- **Hostile to adoption** — asking a non-technical user to navigate to `npub1qe3e...` is a non-starter
+
+The traditional web solved this decades ago with domain names. `google.com` is memorable. `142.250.80.14` is not. Nostr has the same problem — the underlying identifiers work perfectly for machines but are unusable by humans.
+
+### 1.2 Current Workarounds Fall Short
+
+Existing nsite gateways use subdomain-based addressing: `<npub>.gateway.com`. This has two problems:
+
+1. **It doesn't actually solve readability** — the npub is still in the URL, just moved to a subdomain
+2. **It reintroduces DNS dependency** — the gateway domain is controlled by a registrar, hosted by a company, and resolvable only through ICANN's system. The entire decentralization benefit is negated by the fact that one DNS seizure takes down the gateway for everyone.
+
+NIP-05 verification (`user@domain.com`) maps names to pubkeys but requires a web server at that domain — again, DNS-dependent.
+
+### 1.3 What's Needed
+
+The missing piece is a **decentralized, human-readable name system** that maps simple names to Nostr pubkeys without depending on any centralized authority. It should be:
+
+- As easy to type as a domain name
+- Permanent — no annual renewals, no expiration, no seizure
+- Decentralized — no single entity controls the registry
+- Verifiable — anyone can independently confirm that a name maps to a pubkey
+
+Titan solves this by anchoring name registrations in Bitcoin's blockchain — the most secure, immutable, and censorship-resistant ledger in existence.
+
+### 1.4 The Name Land Rush
+
+Because names are permanent and first-come-first-served, the launch of the Titan Name Protocol creates a one-time land rush. Unlike DNS where desirable names can be reclaimed when registrations lapse, a Titan name claimed today is claimed forever. There are no second chances.
+
+Consider: there are only 36 possible single-character names (`a`-`z`, `0`-`9`). Only ~1,300 two-character combinations. Common words like `bitcoin`, `wallet`, `news`, `shop`, `music` — each can only be claimed once. The first person to broadcast a valid registration transaction owns that name for as long as Bitcoin exists.
+
+This isn't a flaw — it's an intentional feature. Scarce, permanent names have value precisely because they cannot be inflated or revoked. The transfer mechanism allows names to change hands, creating a market. But there is no undo, no appeals process, no governance committee. The blockchain is the only authority.
+
+Early participants who understand this will move quickly.
 
 ## 2. The Name Protocol
 
@@ -35,7 +80,7 @@ Every Titan name operation is encoded in a single OP_RETURN output:
 
 ```
 Offset  Size  Field       Description
-0       4     magic       "TITN" (0x5449544E)
+0       4     magic       "NSIT" (0x4E534954)
 4       1     version     0x01
 5       1     action      0x00 = register, 0x01 = transfer
 6       1     name_len    Length of name (1-41 bytes)
@@ -72,7 +117,7 @@ This creates a chain of ownership rooted in the original registration transactio
 
 ### 2.6 Indexing
 
-An indexer scans the Bitcoin blockchain for OP_RETURN outputs matching the `TITN` magic prefix. For each valid payload:
+An indexer scans the Bitcoin blockchain for OP_RETURN outputs matching the `NSIT` magic prefix. For each valid payload:
 
 - **Register**: If the name is unclaimed, record the mapping (name → pubkey, owner address, txid, block height)
 - **Transfer**: If the name exists and the transaction's first input is from the current owner address, update the pubkey and owner address

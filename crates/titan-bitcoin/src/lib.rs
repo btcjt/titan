@@ -1,8 +1,6 @@
-//! Bitcoin OP_RETURN name protocol — codec, indexer, and SQLite store.
+//! Bitcoin OP_RETURN name protocol — codec, RPC client, and SQLite store.
 
 pub mod codec;
+pub mod indexer;
+pub mod rpc;
 pub mod store;
-
-// TODO: Phase 2-3
-// pub mod rpc;
-// pub mod indexer;
