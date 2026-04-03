@@ -37,6 +37,8 @@ Creates a name→pubkey mapping. If the name already exists on-chain, the transa
 
 **Ownership**: The "owner" of a name is the entity that controls the address used as the first input of the registration transaction. This address is stored by the indexer for transfer verification.
 
+**Name = site identity**: The registered name is also the site identifier on Nostr. When registering `westernbtc`, the publisher creates a kind 35128 (addressable) manifest event with `d=westernbtc`. One name, one site. Multiple sites require multiple name registrations (which can point to the same pubkey).
+
 ### Transfer (0x01)
 
 Updates the pubkey associated with a name.

@@ -15,7 +15,7 @@ nsite://westernbtc
 Bitcoin OP_RETURN index (name -> pubkey)
   |
   v
-Nostr relays (kind 10002 relay list -> kind 15128 site manifest)
+Nostr relays (kind 10002 relay list -> kind 35128 site manifest)
   |
   v
 Blossom servers (SHA256 hash -> file blob)
@@ -48,7 +48,7 @@ That's it. Simple enough to say out loud, short enough for a billboard, permanen
 
 **Names are first-come, first-served, and permanent.** There are only 36 possible single-character names. Only ~1,300 two-character names. Words like `bitcoin`, `wallet`, `news`, `shop` — each can only be claimed once, ever. There is no expiration, no appeals process, no second chance.
 
-No names have been pre-registered. Fair launch. Everyone starts at the same block height.
+Two names registered for testing (`titan`, `westernbtc`). Everything else is unclaimed. Fair launch.
 
 > *"It might make sense just to get some in case it catches on."* — Satoshi Nakamoto
 
@@ -88,7 +88,7 @@ titan/
 
 ## Status
 
-Phase 1 — types and OP_RETURN codec. See [docs/roadmap.md](docs/roadmap.md).
+Phases 1–5 complete (types, Bitcoin RPC, indexer, Nostr resolver, Tauri browser shell). See [docs/roadmap.md](docs/roadmap.md).
 
 ## Building
 

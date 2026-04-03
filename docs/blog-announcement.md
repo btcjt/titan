@@ -1,5 +1,11 @@
 # Titan: Solving the Last Problem of the Decentralized Web
 
+**I'm giving everybody a 15-minute head start. Starting from the timestamp on this post, I won't register a single name. After that, it's open season — for me and everyone else.**
+
+Read on to understand what that means.
+
+---
+
 Nostr solved identity. Blossom solved storage. NIP-5A solved hosting. But there's been one glaring problem left: **nobody can remember a public key.**
 
 ```
@@ -66,13 +72,13 @@ This isn't like DNS where you can wait for a domain to expire and grab it. There
 
 The transfer mechanism means names can be bought and sold. A marketplace will emerge naturally. But the supply is fixed at registration time. Every name that gets claimed is one fewer name available to everyone else, forever.
 
-No names have been pre-registered. No insider allocation. No reserved list. The developer doesn't have a head start. When the first version of Titan ships and the protocol goes live, everyone starts at the same block height. Fair launch.
+Two names have been registered for testing: `titan` and `westernbtc`. That's it. No insider allocation. No reserved list. Everything else is unclaimed.
 
-That said — as Satoshi put it:
+That's the 15 minutes. I'm giving you a head start on myself. After that, I'm claiming names too — because I'd be an idiot not to.
+
+As Satoshi put it:
 
 > *"It might make sense just to get some in case it catches on."*
-
-If you understand what this means, you'll move quickly.
 
 ## What Titan Is (and Isn't)
 
@@ -97,9 +103,9 @@ Everything is open source: [github.com/btcjt/titan](https://github.com/btcjt/tit
 
 ## What's Next
 
-The name protocol is designed. The codec is built and tested. The resolver is taking shape. We're working through the build phases toward a first release.
+The browser works. The protocol is live. You can register names now.
 
-When Titan ships, the first registration transactions go on-chain. And the clock starts on the land rush.
+Your 15 minutes started at the top of this post. Clock's ticking.
 
 ---
 

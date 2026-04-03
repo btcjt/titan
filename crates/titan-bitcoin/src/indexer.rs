@@ -317,6 +317,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 
@@ -354,6 +355,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 
@@ -400,6 +402,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 
@@ -445,6 +448,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 
@@ -481,6 +485,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 
@@ -509,6 +514,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 
@@ -560,6 +566,7 @@ mod tests {
             url: String::new(),
             user: String::new(),
             password: String::new(),
+            wallet: None,
         });
         let indexer = Indexer::new(rpc, store);
 

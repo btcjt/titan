@@ -15,6 +15,8 @@ pub struct RpcConfig {
     pub user: String,
     /// RPC password from bitcoin.conf.
     pub password: String,
+    /// Wallet name for wallet-specific RPCs (optional).
+    pub wallet: Option<String>,
 }
 
 /// Bitcoin Core JSON-RPC client.
@@ -118,6 +120,24 @@ pub struct TxOutput {
     pub script_pub_key: ScriptPubKey,
 }
 
+// ── Wallet response types ──
+
+/// Response from `fundrawtransaction`.
+#[derive(Debug, Deserialize)]
+pub struct FundedTransaction {
+    pub hex: String,
+    pub fee: f64,
+    #[serde(rename = "changepos")]
+    pub change_pos: i64,
+}
+
+/// Response from `signrawtransactionwithwallet`.
+#[derive(Debug, Deserialize)]
+pub struct SignedTransaction {
+    pub hex: String,
+    pub complete: bool,
+}
+
 // ── RPC error ──
 
 /// Errors from Bitcoin Core RPC calls.
@@ -186,6 +206,93 @@ impl BitcoinRpc {
     /// Get a full block with decoded transactions (verbosity=2).
     pub async fn get_block(&self, hash: &str) -> Result<Block, RpcError> {
         self.call("getblock", serde_json::json!([hash, 2])).await
+    }
+
+    /// Raw JSON-RPC call to the wallet endpoint.
+    async fn wallet_call<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, RpcError> {
+        let url = match &self.config.wallet {
+            Some(w) => format!("{}/wallet/{}", self.config.url, w),
+            None => self.config.url.clone(),
+        };
+
+        let req = RpcRequest {
+            jsonrpc: "1.0",
+            id: 1,
+            method,
+            params,
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .basic_auth(&self.config.user, Some(&self.config.password))
+            .json(&req)
+            .send()
+            .await?
+            .json::<RpcResponse<T>>()
+            .await?;
+
+        if let Some(err) = resp.error {
+            return Err(RpcError::Rpc {
+                code: err.code,
+                message: err.message,
+            });
+        }
+
+        resp.result.ok_or(RpcError::NullResult)
+    }
+
+    // ── Wallet RPCs (for name registration/transfer) ──
+
+    /// Get a new bech32 address from the wallet.
+    pub async fn get_new_address(&self, label: &str) -> Result<String, RpcError> {
+        self.wallet_call("getnewaddress", serde_json::json!([label, "bech32"]))
+            .await
+    }
+
+    /// Create a raw transaction with an OP_RETURN output.
+    /// `data_hex` is the hex-encoded payload (e.g. NSIT-encoded name registration).
+    pub async fn create_op_return_tx(&self, data_hex: &str) -> Result<String, RpcError> {
+        self.wallet_call(
+            "createrawtransaction",
+            serde_json::json!([[], [{"data": data_hex}]]),
+        )
+        .await
+    }
+
+    /// Fund a raw transaction (add inputs and change output).
+    pub async fn fund_raw_transaction(
+        &self,
+        raw_tx_hex: &str,
+        change_address: &str,
+    ) -> Result<FundedTransaction, RpcError> {
+        self.wallet_call(
+            "fundrawtransaction",
+            serde_json::json!([raw_tx_hex, {"changeAddress": change_address}]),
+        )
+        .await
+    }
+
+    /// Sign a raw transaction with the wallet's keys.
+    pub async fn sign_raw_transaction(
+        &self,
+        raw_tx_hex: &str,
+    ) -> Result<SignedTransaction, RpcError> {
+        self.wallet_call(
+            "signrawtransactionwithwallet",
+            serde_json::json!([raw_tx_hex]),
+        )
+        .await
+    }
+
+    /// Broadcast a signed raw transaction.
+    pub async fn send_raw_transaction(&self, raw_tx_hex: &str) -> Result<String, RpcError> {
+        self.call("sendrawtransaction", serde_json::json!([raw_tx_hex]))
+            .await
     }
 }
 

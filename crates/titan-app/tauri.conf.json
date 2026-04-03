@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
+  "productName": "Titan",
+  "version": "0.1.0",
+  "identifier": "com.titan.browser",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Titan",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 600,
+        "minHeight": 400,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' nsite-content:; style-src 'self' 'unsafe-inline' nsite-content:; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' nsite-content:; img-src 'self' nsite-content: asset: http: https: data: blob:; connect-src 'self' nsite-content: asset: http: https: blob: wss: ws:; font-src 'self' nsite-content: data:; frame-src 'self' nsite-content: https:; worker-src 'self' nsite-content: blob:; media-src 'self' nsite-content: https:; manifest-src 'self' nsite-content:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

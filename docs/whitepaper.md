@@ -62,7 +62,7 @@ Consider: there are only 36 possible single-character names (`a`-`z`, `0`-`9`). 
 
 This isn't a flaw — it's an intentional feature. Scarce, permanent names have value precisely because they cannot be inflated or revoked. The transfer mechanism allows names to change hands, creating a market. But there is no undo, no appeals process, no governance committee. The blockchain is the only authority.
 
-Importantly, no names have been pre-registered by the protocol developers. There is no insider allocation, no reserved list, no genesis block advantage. The protocol launches with an empty registry. Everyone starts at the same block height — a fair launch in the Bitcoin tradition.
+Two names — `titan` and `westernbtc` — have been registered for testing purposes. Beyond that, there is no insider allocation, no reserved list, no genesis block advantage. Every other name is unclaimed. Fair launch in the Bitcoin tradition.
 
 The supply is finite. The launch is fair. Early participants who understand this will move quickly. As Satoshi once wrote: *"It might make sense just to get some in case it catches on."*
 
@@ -126,20 +126,51 @@ An indexer scans the Bitcoin blockchain for OP_RETURN outputs matching the `NSIT
 
 The index is deterministic — any node scanning the same blockchain will arrive at the same name→pubkey mappings.
 
-## 3. Resolution Flow
+### 2.7 Name = Site Identity
 
-When a user navigates to `nsite://westernbtc`:
+A registered Bitcoin name is not just an alias for a pubkey — it is the site identifier. When a user registers `westernbtc` on-chain, they publish a corresponding Nostr manifest event (kind 35128, addressable) with `d=westernbtc`. The on-chain name and the Nostr d-tag are the same string: one on Bitcoin, one on relays, identifying the same site.
 
-1. **Name lookup**: Query the local Bitcoin name index for "westernbtc" → returns a 32-byte Nostr pubkey
+Want multiple sites under the same Nostr identity? Register multiple names. Each name points to the same pubkey but publishes a separate manifest. There is no concept of "sub-sites" or "d-tag as URL component" — one name, one site.
+
+For users who don't register a name and instead share their npub directly, a single root manifest (kind 15128, one per pubkey) serves as their site. This is the direct-npub mode.
+
+## 3. URL Scheme
+
+```
+nsite://<host>[/<path>]
+
+host = <bitcoin-name> | npub1<bech32>
+path = file path within manifest (default: /)
+```
+
+No file extensions. No subdomains. No TLDs. The `nsite://` scheme is the only signal needed.
+
+Examples:
+- `nsite://westernbtc` — Bitcoin name, loads root page
+- `nsite://westernbtc/blog/post.html` — Bitcoin name, specific path
+- `nsite://npub1abc...` — Direct pubkey, root page
+- `nsite://npub1abc.../about` — Direct pubkey, specific path
+
+## 4. Resolution Flow
+
+### Bitcoin name (`nsite://westernbtc`)
+
+1. **Name lookup**: Query the local Bitcoin name index for "westernbtc" → 32-byte Nostr pubkey
 2. **Relay discovery**: Query fallback relays for the pubkey's kind 10002 (NIP-65 relay list) event
-3. **Manifest fetch**: Query the pubkey's relays for kind 15128 (root site manifest) or kind 35128 (named site manifest) per NIP-5A
+3. **Manifest fetch**: Query the pubkey's relays for kind 35128 (addressable manifest) with `d=westernbtc`
 4. **Path resolution**: Match the requested path against the manifest's `path` tags to get a SHA256 blob hash
 5. **Blob fetch**: Retrieve the blob from Blossom servers (listed in the manifest's `server` tags, the pubkey's kind 10063 event, or fallback servers)
 6. **Render**: Display the content in the native webview
 
 Sub-resources (CSS, JS, images) referenced by the HTML resolve through the same pipeline using the cached manifest.
 
-## 4. Caching Strategy
+### Direct npub (`nsite://npub1...`)
+
+Same flow as above, but:
+- Step 1 is skipped (pubkey is decoded directly from bech32)
+- Step 3 queries kind 15128 (root manifest, one per pubkey) instead of kind 35128
+
+## 5. Caching Strategy
 
 Content-addressed storage enables aggressive caching:
 
@@ -153,7 +184,7 @@ Content-addressed storage enables aggressive caching:
 
 Blobs are the bulk of cached data and never need invalidation. A site "update" means a new manifest pointing to new hashes — old blobs remain valid and shared resources (common libraries, unchanged images) hit cache automatically.
 
-## 5. Security Model
+## 6. Security Model
 
 - **Name integrity**: Secured by Bitcoin proof-of-work. Reversing a registration requires a 51% attack.
 - **Content integrity**: Every blob is verified against its SHA256 hash. Blossom servers cannot serve tampered content.
@@ -167,7 +198,7 @@ Blobs are the bulk of cached data and never need invalidation. A site "update" m
 - A Bitcoin chain reorganization removing a recent registration (mitigated by waiting for confirmations)
 - The site owner publishing malicious content (same as the current web — Titan authenticates the author, not the content)
 
-## 6. Comparison
+## 7. Comparison
 
 | | Traditional Web | nsite v2 (gateway) | Titan |
 |---|---|---|---|
@@ -179,7 +210,7 @@ Blobs are the bulk of cached data and never need invalidation. A site "update" m
 | Censorship | Domain seizure, hosting takedown | Gateway can block | No single point of failure |
 | Client | Any browser | Any browser via gateway | Titan (native) |
 
-## 7. Future Work
+## 8. Future Work
 
 - **Browser extensions**: Plugin system for nsite-native applications
 - **Multi-tab browsing**: Tabbed interface with session management
@@ -189,7 +220,7 @@ Blobs are the bulk of cached data and never need invalidation. A site "update" m
 - **Mobile**: Tauri supports iOS and Android (post-desktop MVP)
 - **Search**: Nostr-native search indexing of nsite content
 
-## 8. Implementation
+## 9. Implementation
 
 Titan is implemented in Rust using the Tauri framework for native desktop rendering. The codebase is organized as a Cargo workspace:
 

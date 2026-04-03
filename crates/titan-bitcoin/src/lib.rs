@@ -4,3 +4,4 @@ pub mod codec;
 pub mod indexer;
 pub mod rpc;
 pub mod store;
+pub mod tx;

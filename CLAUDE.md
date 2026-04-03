@@ -46,15 +46,44 @@ Offset  Size  Field       Description
 - Names: lowercase only, DNS-like charset, max 41 chars
 - Mainnet only
 
-## Resolution Flow
+## URL Spec
 
 ```
-nsite://westernbtc
-  → SQLite: name → pubkey
-  → Relays: kind 10002 (relay list) → kind 15128/35128 (manifest)
-  → Blossom: SHA256 hash → blob
-  → Webview: render
+nsite://<host>[/<path>]
+
+host = <bitcoin-name> | npub1<bech32>
+path = file path within manifest (default: /)
 ```
+
+No extensions, no subdomains, no TLDs. One name = one site.
+
+Reserved hosts: `settings`, `history`, `bookmarks` (browser internals).
+`nsite://titan` is not reserved — it's a real registered name serving the name manager UI through the nsite stack itself.
+
+## Resolution Flow
+
+**Bitcoin name** (`nsite://westernbtc`):
+```
+westernbtc → SQLite index → pubkey
+  → Relays: kind 10002 (relay list)
+  → Relays: kind 35128 (manifest, d=westernbtc)
+  → Blossom: SHA256 hash → blob → render
+```
+
+**Direct npub** (`nsite://npub1...`):
+```
+npub → pubkey (bech32 decode)
+  → Relays: kind 10002 (relay list)
+  → Relays: kind 15128 (root manifest)
+  → Blossom: SHA256 hash → blob → render
+```
+
+The address type determines the manifest kind:
+- Name → kind 35128 (addressable, d-tag = the registered name)
+- npub → kind 15128 (root, one per pubkey)
+
+Want multiple sites? Register multiple names. Each points to the same
+pubkey but publishes a separate kind 35128 manifest with d=that-name.
 
 ## Hardcoded Fallbacks
 
@@ -75,9 +104,10 @@ Blossom: https://blossom.westernbtc.com, https://nostr.build
 2. ~~Bitcoin RPC client + SQLite store~~ (DONE — 26 tests passing)
 3. ~~Block scanner / indexer~~ (DONE — 33 tests passing)
 4. ~~Nostr resolver (relays + Blossom)~~ (DONE — 47 tests passing)
-5. Tauri browser shell + protocol handler (NEXT)
-6. Integration + error states
-7. Distribution (dmg/AppImage/msi, GitHub Actions)
+5. ~~Tauri browser shell + protocol handler~~ (DONE — 51 tests passing)
+6. ~~Integration + error states~~ (DONE — 54 tests passing)
+7. Name Manager — `nsite://titan` (dogfooded nsite: lookup, register, transfer, stats)
+8. Distribution (dmg/AppImage/msi, GitHub Actions)
 
 ## Key Decisions Made
 
@@ -89,6 +119,10 @@ Blossom: https://blossom.westernbtc.com, https://nostr.build
 - "NSIT" 4-byte magic prefix (protocol name, not browser name)
 - SQLite with bundled feature (no system dependency)
 - `nsite://` scheme (protocol name, not browser name — other browsers could implement)
+- Name = site: registered Bitcoin name IS the d-tag for kind 35128, no separate site-name concept
+- npub = root site: kind 15128, one per pubkey, no d-tag needed
+- No file extensions in URLs (no .nsite, no .com) — the scheme is the protocol signal
+- Sub-resources served via `nsite-content://` custom Tauri protocol for transparent path resolution
 
 ## Docs
 

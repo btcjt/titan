@@ -151,26 +151,59 @@ impl RelayPool {
         Ok(urls)
     }
 
-    /// Fetch the nsite manifest event (kind 15128 or 35128) for a pubkey.
-    /// Tries both kinds and returns the newest event found.
+    /// Fetch the nsite manifest event for a pubkey.
+    ///
+    /// The address type determines which manifest kind to query:
+    /// - **Bitcoin name** (`site_name = Some("westernbtc")`): kind 35128 with
+    ///   `d` tag matching the registered name. The on-chain name IS the site
+    ///   identifier — one name, one site.
+    /// - **Direct npub** (`site_name = None`): kind 15128 (root, one per pubkey).
     pub async fn fetch_manifest(
         &self,
         pubkey: &PublicKey,
+        site_name: Option<&str>,
     ) -> Result<Option<Event>, RelayError> {
-        // Query both kinds simultaneously — race_fetch will collect from all relays
-        for kind_num in [35128u16, 15128] {
-            let filter = Filter::new()
-                .author(*pubkey)
-                .kind(Kind::Custom(kind_num));
+        match site_name {
+            Some(name) => {
+                // Bitcoin name → kind 35128, d-tag = the registered name
+                let filter = Filter::new()
+                    .author(*pubkey)
+                    .kind(Kind::Custom(35128))
+                    .custom_tag(SingleLetterTag::from_char('d').unwrap(), [name]);
 
-            let events = self.race_fetch(filter).await?;
-            if let Some(event) = Self::newest_event(events) {
-                debug!("found manifest (kind {kind_num}) for {pubkey}");
-                return Ok(Some(event));
+                let events = self.race_fetch(filter).await?;
+                if let Some(event) = Self::newest_event(events) {
+                    debug!("found named manifest (kind 35128, d={name}) for {pubkey}");
+                    return Ok(Some(event));
+                }
+
+                // Fall back to kind 15128 in case the publisher uses root manifests
+                let filter = Filter::new()
+                    .author(*pubkey)
+                    .kind(Kind::Custom(15128));
+
+                let events = self.race_fetch(filter).await?;
+                if let Some(event) = Self::newest_event(events) {
+                    debug!("falling back to root manifest (kind 15128) for {pubkey}");
+                    return Ok(Some(event));
+                }
+
+                Ok(None)
+            }
+            None => {
+                // Direct npub → kind 15128 (root manifest, one per pubkey)
+                let filter = Filter::new()
+                    .author(*pubkey)
+                    .kind(Kind::Custom(15128));
+
+                let events = self.race_fetch(filter).await?;
+                if let Some(event) = Self::newest_event(events) {
+                    debug!("found root manifest (kind 15128) for {pubkey}");
+                    return Ok(Some(event));
+                }
+                Ok(None)
             }
         }
-
-        Ok(None)
     }
 
     /// Add additional relay URLs to the pool (e.g. from a pubkey's relay list).
@@ -183,10 +216,18 @@ impl RelayPool {
         self.client.connect().await;
     }
 
-    /// Shut down all relay connections.
+    /// Shut down all relay connections (takes ownership).
     pub async fn shutdown(self) -> Result<(), RelayError> {
         self.client
             .shutdown()
+            .await
+            .map_err(|e| RelayError::Fetch(e.to_string()))
+    }
+
+    /// Disconnect all relays (borrow-friendly, for use in OnceCell/Arc contexts).
+    pub async fn disconnect(&self) -> Result<(), RelayError> {
+        self.client
+            .disconnect()
             .await
             .map_err(|e| RelayError::Fetch(e.to_string()))
     }
