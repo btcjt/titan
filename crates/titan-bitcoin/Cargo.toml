@@ -1,0 +1,17 @@
+[package]
+name = "titan-bitcoin"
+description = "Bitcoin OP_RETURN name protocol codec and indexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan-types = { path = "../titan-types" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+thiserror = "2"
+hex = "0.4"

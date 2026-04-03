@@ -1,0 +1,19 @@
+[package]
+name = "titan-app"
+description = "Titan nsite browser — Tauri desktop application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan-types = { path = "../titan-types" }
+titan-bitcoin = { path = "../titan-bitcoin" }
+titan-resolver = { path = "../titan-resolver" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Tauri will be added when we scaffold with `cargo tauri init` in Phase 5
+# tauri = { version = "2", features = [] }

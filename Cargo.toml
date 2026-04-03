@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/titan-types",
+    "crates/titan-bitcoin",
+    "crates/titan-resolver",
+    "crates/titan-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/btcjt/titan"
