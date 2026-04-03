@@ -62,7 +62,9 @@ Consider: there are only 36 possible single-character names (`a`-`z`, `0`-`9`). 
 
 This isn't a flaw — it's an intentional feature. Scarce, permanent names have value precisely because they cannot be inflated or revoked. The transfer mechanism allows names to change hands, creating a market. But there is no undo, no appeals process, no governance committee. The blockchain is the only authority.
 
-Early participants who understand this will move quickly.
+Importantly, no names have been pre-registered by the protocol developers. There is no insider allocation, no reserved list, no genesis block advantage. The protocol launches with an empty registry. Everyone starts at the same block height — a fair launch in the Bitcoin tradition.
+
+The supply is finite. The launch is fair. Early participants who understand this will move quickly. As Satoshi once wrote: *"It might make sense just to get some in case it catches on."*
 
 ## 2. The Name Protocol
 

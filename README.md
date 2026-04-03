@@ -46,7 +46,11 @@ nsite://westernbtc
 
 That's it. Simple enough to say out loud, short enough for a billboard, permanent as the blockchain.
 
-**Names are first-come, first-served, and permanent.** There are only 36 possible single-character names. Only ~1,300 two-character names. Words like `bitcoin`, `wallet`, `news`, `shop` — each can only be claimed once, ever. There is no expiration, no appeals process, no second chance. Early movers win.
+**Names are first-come, first-served, and permanent.** There are only 36 possible single-character names. Only ~1,300 two-character names. Words like `bitcoin`, `wallet`, `news`, `shop` — each can only be claimed once, ever. There is no expiration, no appeals process, no second chance.
+
+No names have been pre-registered. Fair launch. Everyone starts at the same block height.
+
+> *"It might make sense just to get some in case it catches on."* — Satoshi Nakamoto
 
 ## The Name Protocol
 

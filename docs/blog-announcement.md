@@ -66,6 +66,12 @@ This isn't like DNS where you can wait for a domain to expire and grab it. There
 
 The transfer mechanism means names can be bought and sold. A marketplace will emerge naturally. But the supply is fixed at registration time. Every name that gets claimed is one fewer name available to everyone else, forever.
 
+No names have been pre-registered. No insider allocation. No reserved list. The developer doesn't have a head start. When the first version of Titan ships and the protocol goes live, everyone starts at the same block height. Fair launch.
+
+That said — as Satoshi put it:
+
+> *"It might make sense just to get some in case it catches on."*
+
 If you understand what this means, you'll move quickly.
 
 ## What Titan Is (and Isn't)
