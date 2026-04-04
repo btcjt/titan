@@ -65,8 +65,8 @@
 - [x] nsite://titan: nav bar (Search, Browse, Register)
 - [x] Removed SQLite and Bitcoin Core dependency from browser
 - [x] Removed built-in name manager (replaced by nsite://titan)
-- [ ] My names: list names owned by a given address or pubkey
-- [ ] Name history: registration and transfer timeline for a name
+- [x] My names: list names by npub (/my-names, queries kind 35129 by #p tag)
+- [x] Name details + history: /name?q= page with UTXO, mempool.space link, timeline
 
 ## Phase 8: Distribution
 - [ ] macOS .dmg
