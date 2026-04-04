@@ -35,20 +35,20 @@ Total: 39 + N bytes. Maximum 80 bytes (Bitcoin OP_RETURN limit).
 
 Creates a name→pubkey mapping. If the name already exists on-chain, the transaction is silently ignored.
 
-**Ownership**: The "owner" of a name is the entity that controls the address used as the first input of the registration transaction. This address is stored by the indexer for transfer verification.
+**Ownership UTXO**: The first non-OP_RETURN output of the registration transaction becomes the ownership UTXO. Whoever can spend this UTXO controls the name.
 
 **Name = site identity**: The registered name is also the site identifier on Nostr. When registering `westernbtc`, the publisher creates a kind 35128 (addressable) manifest event with `d=westernbtc`. One name, one site. Multiple sites require multiple name registrations (which can point to the same pubkey).
 
 ### Transfer (0x01)
 
-Updates the pubkey associated with a name.
+Updates the Nostr pubkey and/or transfers ownership of a name.
 
 **Requirements**:
 1. The name must already be registered
-2. The first input of the transfer transaction must spend from the current owner address
+2. The transaction must **spend the current ownership UTXO** as one of its inputs
 3. The pubkey field contains the new Nostr pubkey to associate with the name
 
-**After transfer**: The owner address updates to the first input address of the transfer transaction.
+**After transfer**: The first non-OP_RETURN output of the transfer transaction becomes the new ownership UTXO. This enables full ownership transfer — send the output to a new address to hand off control.
 
 ## Indexer Behavior
 
@@ -141,6 +141,37 @@ Stats filter: `{kinds: [15129], authors: [indexerPubkey]}`
 ### Verification
 
 The Nostr index is a convenience layer — it is not the source of truth. Any node scanning the same blockchain will arrive at the same name→pubkey mappings. Clients that run Bitcoin Core can verify the index against their own chain. The indexer's events are signed by its Nostr keypair, providing attribution but not consensus.
+
+## Ownership Model
+
+Ownership of a name is tied to a specific **UTXO** (unspent transaction output), not an address. When you register a name, the first non-OP_RETURN output of the registration transaction becomes the **ownership UTXO**. Whoever can spend that UTXO controls the name.
+
+### How transfer works
+
+To transfer a name (change the pubkey or hand off ownership), you must:
+
+1. **Spend the ownership UTXO** as one of the inputs to the transfer transaction
+2. Include the NSIT transfer OP_RETURN with the new pubkey
+3. The first non-OP_RETURN output of the transfer transaction becomes the **new ownership UTXO**
+
+This means:
+- **Full ownership transfer** is built in — send the ownership UTXO to someone else's address in the transfer transaction, and they now control the name
+- **Pubkey updates** work the same way — spend the UTXO back to yourself with a new pubkey in the OP_RETURN
+- **Sales** are natural — the ownership UTXO can be spent to a buyer's address as part of the transfer
+- No private key sharing needed
+
+### What happens if the ownership UTXO is spent without a transfer?
+
+If the ownership UTXO is spent in a regular Bitcoin transaction (no NSIT OP_RETURN), the name becomes **permanently frozen**. It still resolves to the current pubkey — the site works — but nobody can ever transfer it again, because the required UTXO no longer exists.
+
+**This is irreversible.** There is no recovery mechanism.
+
+### Best practices
+
+- **Use coin control.** In Sparrow or similar wallets, freeze the ownership UTXO so you don't accidentally spend it.
+- **Label the UTXO** in your wallet so you know it controls a name.
+- **Don't mix name UTXOs with spending funds.** Keep them in a separate wallet or at least clearly labeled.
+- When transferring, make sure the NSIT OP_RETURN is in the same transaction that spends the ownership UTXO.
 
 ## Security Considerations
 

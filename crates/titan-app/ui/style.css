@@ -90,14 +90,6 @@ html, body {
   cursor: default;
 }
 
-#btn-names {
-  color: var(--amber-dim);
-  font-size: 14px;
-}
-
-#btn-names:hover {
-  color: var(--amber);
-}
 
 /* ── Address bar ── */
 
@@ -194,8 +186,9 @@ body {
 }
 
 #logo {
-  font-size: 64px;
-  color: var(--amber);
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
   filter: drop-shadow(0 0 30px var(--amber-glow));
   margin-bottom: 8px;
 }

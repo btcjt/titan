@@ -9,7 +9,7 @@
 ## Phase 2: Bitcoin RPC + SQLite Store
 - [x] Bitcoin Core JSON-RPC client (getblockchaininfo, getblockhash, getblock)
 - [x] Wallet RPCs (getnewaddress, createrawtransaction, fundrawtransaction, signrawtransactionwithwallet, sendrawtransaction)
-- [x] SQLite schema (names table, sync_state table)
+- [x] SQLite schema (names table, sync_state table) — used by nsit-indexer service
 - [x] Store operations (get_name, insert_name, transfer_name, sync state, rollback)
 
 ## Phase 3: Block Scanner / Indexer
@@ -17,7 +17,7 @@
 - [x] Registration processing (first-in-chain wins)
 - [x] Transfer processing (owner verification)
 - [x] Background chain tip polling (30s interval)
-- [x] Configurable start height (BITCOIN_START_HEIGHT env var)
+- [x] Configurable start height
 
 ## Phase 4: Nostr Resolver
 - [x] Relay connection pool with fallbacks
@@ -29,40 +29,42 @@
 - [x] Blossom HTTP blob fetching with SHA256 verification
 - [x] Disk cache (manifests 5min TTL, relay/blossom lists 1hr, blobs forever)
 - [x] nsite v1 fallback (kind 34128 per-file events assembled into manifest)
+- [x] Nostr-based name lookup (kind 35129 from indexer service)
 
 ## Phase 5: Tauri Browser Shell
 - [x] `nsite-content://` custom protocol handler for sub-resource resolution
-- [x] Minimal UI: address bar, back/forward/refresh, Titan moon theme
+- [x] Minimal UI: address bar, back/forward/refresh, Titan moon theme + logo
 - [x] Webview content rendering via custom protocol
 - [x] npub, hex pubkey, and base36 resolution
-- [x] Bitcoin name resolution: Nostr index (primary) → SQLite (fallback)
-- [x] Background indexer startup (graceful if Bitcoin Core unavailable)
-- [x] NSIT transaction builder (register/transfer names via Bitcoin Core wallet RPCs)
+- [x] Name resolution purely via Nostr (no local SQLite, no Bitcoin Core)
 - [x] OnceCell resolver + RwLock nav context for concurrent sub-resource loading
 - [x] Link interception (nsite:// clicks within rendered pages via postMessage)
 - [x] Error categorization (name not found, relay down, hash mismatch, etc.)
 - [x] Graceful shutdown (relay disconnect on window close)
 - [x] Keyboard shortcut: Cmd/Ctrl+L to focus address bar
+- [x] Default homepage: nsite://titan
 
 ## Phase 6: Integration + Polish
-- [x] End-to-end: registered `titan` on Bitcoin mainnet (txid: 322ab8...)
-- [x] End-to-end: published titan nsite v2, loaded in Titan browser
-- [x] `nsite://titan` resolves via Bitcoin name → Nostr manifest → Blossom blobs → render
+- [x] Registered `titan` on Bitcoin mainnet (block 943619)
+- [x] Published nsite://titan as nsite v2, loaded in Titan browser
+- [x] End-to-end: nsite://titan resolves via Nostr name index → manifest → Blossom → render
 
-## Phase 7: Name Manager + Nostr Index
-- [x] `titan` registered on Bitcoin mainnet (block 943619)
-- [x] `nsite://titan` published as nsite v2 (kind 35128, d=titan + kind 15128 root)
+## Phase 7: nsite://titan + Nostr Index
+- [x] nsite://titan published as nsite v2 (kind 35128 + kind 15128)
 - [x] nsite v2 publisher script with Blossom auth (BUD-01 kind 24242)
-- [x] Client-side NSIT OP_RETURN generator on nsite://titan (paste into any wallet)
+- [x] nsit-indexer service deployed on k8s (watches Bitcoin → publishes Nostr events)
+- [x] Indexer resumes from relay state on restart (fetches own kind 15129/35129)
 - [x] Nostr name index: kind 35129 (name records) + kind 15129 (stats)
-- [x] nsit-indexer service (TypeScript, k8s deployment, watches Bitcoin blocks → publishes Nostr events)
-- [x] Full k8s setup: Dockerfile, deployment, network policy, secrets, CI/CD build job, deploy.sh
-- [x] Bitcoin-node network policy updated for nsit-indexer access
-- [x] Built-in browser name manager (Tauri commands: lookup_name, get_index_stats, register_name)
-- [x] Name manager UI accessible via toolbar button (◈)
-- [x] Three-tier name resolution: sync parse → Nostr index (race-then-linger) → not found
-- [x] nsite://titan NDK integration (lookupName, fetchIndexStats via race-then-linger)
-- [ ] Transfer name: build transfer transaction for a name you own
+- [x] nsite://titan: name lookup via NDK with race-then-linger
+- [x] nsite://titan: index stats from kind 15129
+- [x] nsite://titan: recent activity feed
+- [x] nsite://titan: client-side OP_RETURN generator for registration (/register)
+- [x] nsite://titan: transfer OP_RETURN generator (/transfer)
+- [x] nsite://titan: name browser with filter (/names)
+- [x] nsite://titan: redesigned UX — dedicated pages for search, register, transfer, browse
+- [x] nsite://titan: nav bar (Search, Browse, Register)
+- [x] Removed SQLite and Bitcoin Core dependency from browser
+- [x] Removed built-in name manager (replaced by nsite://titan)
 - [ ] My names: list names owned by a given address or pubkey
 - [ ] Name history: registration and transfer timeline for a name
 
@@ -77,5 +79,4 @@
 - Bookmarks + history
 - Extension system
 - Name marketplace
-- Nostr-published name index as bootstrap (skip block scanning for new users)
 - Mobile (iOS/Android via Tauri)

@@ -10,10 +10,8 @@ A native desktop browser that resolves `nsite://` URLs using Nostr relays and re
 
 - **Language**: Rust (edition 2024)
 - **Desktop framework**: Tauri 2 (system webview, cross-platform)
-- **Database**: SQLite via rusqlite (bundled, optional local cache)
 - **Nostr**: nostr-sdk for relay connections + race-then-linger search
-- **Bitcoin**: Core RPC for scanning OP_RETURN transactions (optional)
-- **Name index**: Nostr events (kind 35129/15129) as primary, SQLite as fallback
+- **Name index**: Nostr events (kind 35129/15129) — no local database, no Bitcoin Core
 - **Theme**: Titan moon of Saturn — dark/black with amber accents
 
 ## Repo Structure
@@ -23,14 +21,14 @@ Cargo workspace with 4 crates:
 ```
 crates/
   titan-types/      Core types: TitanName, TitanOp, NsiteUrl, errors
-  titan-bitcoin/    OP_RETURN codec, block scanner, SQLite name index, tx builder
+  titan-bitcoin/    OP_RETURN codec, block scanner, tx builder (used by nsit-indexer service)
   titan-resolver/   Nostr relay queries, Blossom blob fetching, disk cache, name lookup
-  titan-app/        Tauri desktop shell + nsite:// protocol handler + name manager
+  titan-app/        Tauri desktop shell + nsite:// protocol handler
 ```
 
 Related (in westernbtc-monorepo):
 ```
-apps/titan-nsite/        Static nsite at nsite://titan (name manager UI, OP_RETURN generator)
+apps/titan-nsite/        nsite://titan — search, register, transfer, browse names (static nsite v2)
 services/nsit-indexer/   k8s service: watches Bitcoin blocks, publishes name index as Nostr events
 ```
 
@@ -50,7 +48,10 @@ Offset  Size  Field       Description
 
 - First-in-chain wins for registration
 - Same-block conflicts: lower transaction index wins
-- Transfer: first input must spend from current owner address
+- UTXO-based ownership: first non-OP_RETURN output = ownership UTXO
+- Transfer: must spend the ownership UTXO; new ownership = first non-OP_RETURN output of transfer tx
+- Full ownership transfer built in (send UTXO to new address)
+- If ownership UTXO spent without NSIT OP_RETURN → name permanently frozen
 - Names: lowercase only, DNS-like charset, max 41 chars
 - Mainnet only
 
@@ -72,8 +73,8 @@ Reserved hosts: `settings`, `history`, `bookmarks` (browser internals).
 
 Name resolution uses a three-tier strategy with race-then-linger search:
 
-**1. Sync parse** (instant): npub bech32 decode, hex pubkey, base36, local SQLite lookup
-**2. Nostr index** (fast): kind 35129 from indexer service, race-then-linger from relays
+**1. Sync parse** (instant): npub bech32 decode, hex pubkey, base36
+**2. Nostr index** (fast, ~1s): kind 35129 from indexer service, race-then-linger from relays
 **3. Not found**: name is unregistered
 
 **Bitcoin name** (`nsite://westernbtc`):
@@ -116,7 +117,7 @@ Blossom: https://blossom.westernbtc.com
 
 ## Caching Strategy
 
-- Name index: Nostr events (primary), SQLite (optional local cache)
+- Name index: Nostr events (kind 35129), queried from relays on demand
 - Manifests (kind 15128/35128): 5 min TTL
 - Relay lists (kind 10002): 1 hour TTL
 - Blobs: forever (content-addressed, immutable)
@@ -137,15 +138,15 @@ Blossom: https://blossom.westernbtc.com
 4. ~~Nostr resolver (relays + Blossom)~~ (DONE)
 5. ~~Tauri browser shell + protocol handler~~ (DONE)
 6. ~~Integration + error states~~ (DONE — 57 tests, nsite://titan live)
-7. ~~Name Manager + Nostr Index~~ (DONE — nsite://titan with NDK lookups, nsit-indexer service, built-in browser name manager)
-8. Distribution (dmg/AppImage/msi, GitHub Actions)
+7. ~~nsite://titan + Nostr Index~~ (DONE — search/register/transfer/browse, nsit-indexer deployed)
+8. Distribution (dmg/AppImage/msi, GitHub Actions) (NEXT)
 
 ## Key Decisions Made
 
 - Tauri over Electron/CEF (small binary, system webview)
 - nostr-sdk over raw nostr crate (includes relay pool)
-- Nostr-published name index as primary (no Bitcoin Core requirement for browsers)
-- SQLite as optional local cache/verification, not a requirement
+- Nostr-published name index (no local database, no Bitcoin Core for browsers)
+- Browser is a pure Nostr + Blossom client — no local state beyond blob cache
 - Race-then-linger search for all Nostr queries (fast + fresh)
 - "NSIT" 4-byte magic prefix (protocol name, not browser name)
 - `nsite://` scheme (protocol name, not browser name — other browsers could implement)
@@ -153,7 +154,10 @@ Blossom: https://blossom.westernbtc.com
 - npub = root site: kind 15128, one per pubkey, no d-tag needed
 - No file extensions in URLs — the scheme is the protocol signal
 - Sub-resources served via `nsite-content://` custom Tauri protocol
-- nsite://titan is a real dogfooded nsite with client-side OP_RETURN generator
+- nsite://titan is a real dogfooded nsite with search, register, transfer, browse pages
+- Browser default homepage is nsite://titan
+- Removed SQLite and Bitcoin Core from browser — pure Nostr client
+- Removed built-in name manager — all name operations happen on nsite://titan
 - Kind 35129/15129 for the Nostr name index (published by nsit-indexer service)
 - v1 nsite fallback (kind 34128) for compatibility with existing sites
 
@@ -164,7 +168,8 @@ Blossom: https://blossom.westernbtc.com
 
 ## Docs
 
-- `docs/whitepaper.md` — full protocol design and security model
+- `docs/architecture.md` — full system architecture (browser, resolver, indexer, nsite, infra)
+- `docs/whitepaper.md` — protocol design and security model
 - `docs/name-protocol.md` — wire format spec + Nostr index event kinds
 - `docs/roadmap.md` — phased build plan with checkboxes
 - `docs/blog-announcement.md` — launch announcement draft

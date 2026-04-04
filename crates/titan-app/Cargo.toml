@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 titan-types = { path = "../titan-types" }
-titan-bitcoin = { path = "../titan-bitcoin" }
 titan-resolver = { path = "../titan-resolver" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }

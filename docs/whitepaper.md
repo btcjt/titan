@@ -109,20 +109,23 @@ If the name has already been registered in an earlier block (or earlier in the s
 
 ### 2.5 Transfer
 
-To transfer a name, create a Bitcoin transaction where:
+A transfer updates the Nostr pubkey a name resolves to and/or transfers ownership. To transfer, create a Bitcoin transaction where:
 
-1. The first input spends from an address controlled by the current owner (the address that funded the registration or most recent transfer)
+1. One of the inputs **spends the current ownership UTXO**
 2. The OP_RETURN output contains the encoded payload with action `0x01` (transfer)
 3. The `pubkey` field specifies the new Nostr public key
+4. The first non-OP_RETURN output becomes the **new ownership UTXO**
 
-This creates a chain of ownership rooted in the original registration transaction. No separate key management is needed — whoever controls the Bitcoin UTXO controls the name.
+This enables full ownership transfer — send the new ownership output to a buyer's address and they control the name. No separate key exchange needed — whoever controls the UTXO, controls the name.
+
+If the ownership UTXO is spent in a regular transaction without an NSIT OP_RETURN, the name becomes permanently frozen (still resolves, but can never be transferred again).
 
 ### 2.6 Indexing
 
 An indexer scans the Bitcoin blockchain for OP_RETURN outputs matching the `NSIT` magic prefix. For each valid payload:
 
-- **Register**: If the name is unclaimed, record the mapping (name → pubkey, owner address, txid, block height)
-- **Transfer**: If the name exists and the transaction's first input is from the current owner address, update the pubkey and owner address
+- **Register**: If the name is unclaimed, record the mapping (name → pubkey, ownership UTXO = first non-OP_RETURN output)
+- **Transfer**: If the name exists and the transaction spends the current ownership UTXO, update the pubkey and set the new ownership UTXO to the first non-OP_RETURN output
 
 The index is deterministic — any node scanning the same blockchain will arrive at the same name→pubkey mappings.
 
@@ -202,12 +205,21 @@ Blobs are the bulk of cached data and never need invalidation. A site "update" m
 - **Manifest authenticity**: Nostr events are cryptographically signed by the site owner's keypair. Relays cannot forge manifests.
 - **No MITM**: The entire chain from name→pubkey→manifest→content is cryptographically verified. No certificates needed.
 
+### Ownership and transferability
+
+Name ownership is tied to a specific **UTXO**, not an address. The first non-OP_RETURN output of the registration transaction is the ownership UTXO. Whoever can spend it controls the name.
+
+Transfer requires spending this UTXO in a transaction that includes an NSIT OP_RETURN. The first non-OP_RETURN output of the transfer transaction becomes the new ownership UTXO. This enables full ownership transfer to a new address — no key sharing needed.
+
+**Critical risk**: if the ownership UTXO is accidentally spent in a regular transaction (without an NSIT OP_RETURN), the name becomes permanently frozen. It still resolves, but nobody can ever transfer it again. Users should label and freeze the ownership UTXO in their wallet software.
+
 ### What Titan does NOT protect against
 
 - A relay withholding events (mitigated by querying multiple relays)
 - All Blossom servers going offline (mitigated by fallback servers and local cache)
 - A Bitcoin chain reorganization removing a recent registration (mitigated by waiting for confirmations)
 - The site owner publishing malicious content (same as the current web — Titan authenticates the author, not the content)
+- Permanent loss of transfer ability if the ownership UTXO is accidentally spent without an NSIT OP_RETURN
 
 ## 7. Comparison
 

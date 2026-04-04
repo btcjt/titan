@@ -85,11 +85,9 @@ titan/
 - **Name index**: Nostr events (kind 35129/15129) — no Bitcoin Core required for browsing
 - **Nostr**: nostr-sdk with race-then-linger search
 - **Bitcoin**: Core RPC for block scanning (optional, for indexer service and direct registration)
-- **Storage**: SQLite (optional local cache)
-
 ## Status
 
-Phases 1–7 complete. `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads in the Titan browser. Name lookups via Nostr relays. See [docs/roadmap.md](docs/roadmap.md).
+Phases 1–7 complete. `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads as the browser's default homepage. Name lookups via Nostr relays. No Bitcoin Core required. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Building
 
@@ -98,13 +96,7 @@ Phases 1–7 complete. `nsite://titan` is live — registered on Bitcoin mainnet
 cargo build
 cargo test
 
-# Run the browser (Bitcoin Core optional)
-cargo tauri dev
-
-# Run with Bitcoin Core connection (for name indexing)
-BITCOIN_RPC_URL=http://127.0.0.1:8332 \
-BITCOIN_RPC_USER=bitcoin \
-BITCOIN_RPC_PASS=yourpassword \
+# Run the browser
 cargo tauri dev
 ```
 

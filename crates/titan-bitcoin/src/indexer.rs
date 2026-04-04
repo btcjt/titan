@@ -130,7 +130,28 @@ impl Indexer {
         Ok(result)
     }
 
+    /// Find the first non-OP_RETURN output in a transaction (the ownership UTXO).
+    fn first_non_opreturn_output(tx: &Transaction) -> Option<u32> {
+        tx.vout
+            .iter()
+            .find(|o| o.script_pub_key.script_type != "nulldata")
+            .map(|o| o.n)
+    }
+
+    /// Check if a transaction spends a specific UTXO (txid:vout) as any of its inputs.
+    fn spends_utxo(tx: &Transaction, utxo_txid: &str, utxo_vout: u32) -> bool {
+        tx.vin.iter().any(|input| {
+            input.txid.as_deref() == Some(utxo_txid)
+                && input.vout == Some(utxo_vout)
+        })
+    }
+
     /// Scan a single transaction for NSIT OP_RETURN outputs.
+    ///
+    /// UTXO ownership model:
+    /// - Registration: first non-OP_RETURN output becomes the ownership UTXO
+    /// - Transfer: must spend the current ownership UTXO; first non-OP_RETURN
+    ///   output of the transfer tx becomes the new ownership UTXO
     fn process_transaction(
         &self,
         tx: &Transaction,
@@ -150,16 +171,26 @@ impl Indexer {
 
             match op.action {
                 OpAction::Register => {
-                    let owner = tx.first_input_address().unwrap_or("unknown");
+                    // Ownership UTXO = first non-OP_RETURN output of this tx
+                    let owner_vout = match Self::first_non_opreturn_output(tx) {
+                        Some(v) => v,
+                        None => {
+                            debug!("registration for '{}' has no non-OP_RETURN output, skipped", op.name);
+                            result.skipped += 1;
+                            continue;
+                        }
+                    };
+
                     let inserted = self.store.insert_name(
                         &op.name,
                         &op.pubkey,
-                        owner,
+                        &tx.txid,
+                        owner_vout,
                         &tx.txid,
                         block_height,
                     )?;
                     if inserted {
-                        debug!("registered name '{}' at height {block_height}", op.name);
+                        debug!("registered name '{}' at height {block_height} (utxo {}:{})", op.name, tx.txid, owner_vout);
                         result.registrations += 1;
                     } else {
                         debug!("duplicate registration for '{}', skipped", op.name);
@@ -167,33 +198,40 @@ impl Indexer {
                     }
                 }
                 OpAction::Transfer => {
-                    let sender = match tx.first_input_address() {
-                        Some(addr) => addr,
-                        None => {
-                            debug!("transfer for '{}' has no input address, skipped", op.name);
-                            result.skipped += 1;
-                            continue;
-                        }
-                    };
+                    // Verify that this transaction spends the current ownership UTXO
+                    let owner_utxo = self.store.get_owner_utxo(&op.name)?;
+                    match owner_utxo {
+                        Some((ref utxo_txid, utxo_vout))
+                            if Self::spends_utxo(tx, utxo_txid, utxo_vout) =>
+                        {
+                            // New ownership UTXO = first non-OP_RETURN output of this tx
+                            let new_owner_vout = match Self::first_non_opreturn_output(tx) {
+                                Some(v) => v,
+                                None => {
+                                    debug!("transfer for '{}' has no non-OP_RETURN output, skipped", op.name);
+                                    result.skipped += 1;
+                                    continue;
+                                }
+                            };
 
-                    // Verify the sender is the current owner
-                    let current_owner = self.store.get_owner(&op.name)?;
-                    match current_owner {
-                        Some(ref owner) if owner == sender => {
                             self.store.transfer_name(
                                 &op.name,
                                 &op.pubkey,
-                                sender,
+                                &tx.txid,
+                                new_owner_vout,
                                 &tx.txid,
                                 block_height,
                             )?;
-                            debug!("transferred name '{}' at height {block_height}", op.name);
+                            debug!(
+                                "transferred name '{}' at height {block_height} (new utxo {}:{})",
+                                op.name, tx.txid, new_owner_vout
+                            );
                             result.transfers += 1;
                         }
-                        Some(ref owner) => {
+                        Some((ref utxo_txid, utxo_vout)) => {
                             debug!(
-                                "transfer for '{}' rejected: sender {sender} != owner {owner}",
-                                op.name
+                                "transfer for '{}' rejected: tx doesn't spend ownership utxo {}:{}",
+                                op.name, utxo_txid, utxo_vout
                             );
                             result.skipped += 1;
                         }
@@ -244,40 +282,13 @@ mod tests {
     use crate::rpc::*;
     use titan_types::TitanName;
 
-    /// Build a mock OP_RETURN output from a TitanOp.
-    fn make_op_return_output(op: &titan_types::TitanOp) -> TxOutput {
-        let payload = codec::encode(op);
-        // Build the script: OP_RETURN (6a) + push_len + payload
-        let mut script = vec![0x6a, payload.len() as u8];
-        script.extend_from_slice(&payload);
-        TxOutput {
-            n: 0,
-            script_pub_key: ScriptPubKey {
-                hex: hex::encode(&script),
-                script_type: "nulldata".to_string(),
-                address: None,
-            },
-        }
-    }
-
-    /// Build a transaction with a given first-input address and outputs.
-    fn make_tx(txid: &str, first_input_addr: Option<&str>, vout: Vec<TxOutput>) -> Transaction {
-        let vin = vec![TxInput {
-            txid: first_input_addr.map(|_| "prev_tx".to_string()),
-            vout: first_input_addr.map(|_| 0),
-            prevout: first_input_addr.map(|addr| PrevOut {
-                script_pub_key: ScriptPubKey {
-                    hex: String::new(),
-                    script_type: "witness_v1_taproot".to_string(),
-                    address: Some(addr.to_string()),
-                },
-            }),
-        }];
-        Transaction {
-            txid: txid.to_string(),
-            vin,
-            vout,
-        }
+    fn dummy_rpc() -> BitcoinRpc {
+        BitcoinRpc::new(RpcConfig {
+            url: String::new(),
+            user: String::new(),
+            password: String::new(),
+            wallet: None,
+        })
     }
 
     fn test_pubkey() -> [u8; 32] {
@@ -310,197 +321,178 @@ mod tests {
         }
     }
 
-    #[test]
-    fn process_block_registration() {
-        let store = NameStore::open_memory().unwrap();
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+    /// Build an OP_RETURN output for an NSIT payload.
+    fn op_return_output(op: &titan_types::TitanOp, n: u32) -> TxOutput {
+        let payload = codec::encode(op);
+        let mut script = vec![0x6a, payload.len() as u8];
+        script.extend_from_slice(&payload);
+        TxOutput {
+            n,
+            script_pub_key: ScriptPubKey {
+                hex: hex::encode(&script),
+                script_type: "nulldata".to_string(),
+                address: None,
+            },
+        }
+    }
 
-        let op = make_register_op("westernbtc");
-        let block = Block {
-            hash: "00000000abc".to_string(),
-            height: 800_000,
+    /// Build a normal (non-OP_RETURN) output — this becomes the ownership UTXO.
+    fn normal_output(n: u32) -> TxOutput {
+        TxOutput {
+            n,
+            script_pub_key: ScriptPubKey {
+                hex: "0014abcdef".to_string(),
+                script_type: "witness_v0_keyhash".to_string(),
+                address: Some("bc1qtest".to_string()),
+            },
+        }
+    }
+
+    /// Build a registration transaction: OP_RETURN + normal output (ownership UTXO).
+    fn register_tx(txid: &str, op: &titan_types::TitanOp) -> Transaction {
+        Transaction {
+            txid: txid.to_string(),
+            vin: vec![TxInput {
+                txid: Some("funding_tx".to_string()),
+                vout: Some(0),
+                prevout: None,
+            }],
+            vout: vec![
+                normal_output(0),       // ownership UTXO (vout 0)
+                op_return_output(op, 1), // NSIT payload (vout 1)
+            ],
+        }
+    }
+
+    /// Build a transfer transaction that spends a specific UTXO as its first input.
+    fn transfer_tx(
+        txid: &str,
+        spends_txid: &str,
+        spends_vout: u32,
+        op: &titan_types::TitanOp,
+    ) -> Transaction {
+        Transaction {
+            txid: txid.to_string(),
+            vin: vec![TxInput {
+                txid: Some(spends_txid.to_string()),
+                vout: Some(spends_vout),
+                prevout: None,
+            }],
+            vout: vec![
+                normal_output(0),       // new ownership UTXO (vout 0)
+                op_return_output(op, 1), // NSIT transfer payload (vout 1)
+            ],
+        }
+    }
+
+    fn make_block(hash: &str, height: u64, txs: Vec<Transaction>) -> Block {
+        Block {
+            hash: hash.to_string(),
+            height,
             previous_block_hash: None,
             next_block_hash: None,
-            tx: vec![make_tx(
-                "tx1",
-                Some("bc1qowner"),
-                vec![make_op_return_output(&op)],
-            )],
-        };
+            tx: txs,
+        }
+    }
+
+    #[test]
+    fn process_block_registration() {
+        let indexer = Indexer::new(dummy_rpc(), NameStore::open_memory().unwrap());
+
+        let op = make_register_op("westernbtc");
+        let block = make_block("abc", 800_000, vec![register_tx("tx1", &op)]);
 
         let result = indexer.process_block(&block).unwrap();
         assert_eq!(result.registrations, 1);
-        assert_eq!(result.transfers, 0);
         assert_eq!(result.skipped, 0);
 
-        let record = indexer
-            .store()
-            .get_name(&TitanName::new("westernbtc").unwrap())
-            .unwrap()
-            .unwrap();
+        let record = indexer.store().get_name(&TitanName::new("westernbtc").unwrap()).unwrap().unwrap();
         assert_eq!(record.pubkey, test_pubkey());
-        assert_eq!(record.owner_address, "bc1qowner");
+        assert_eq!(record.owner_txid, "tx1");
+        assert_eq!(record.owner_vout, 0); // first non-OP_RETURN output
     }
 
     #[test]
     fn process_block_duplicate_registration() {
-        let store = NameStore::open_memory().unwrap();
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+        let indexer = Indexer::new(dummy_rpc(), NameStore::open_memory().unwrap());
 
         let op = make_register_op("westernbtc");
-        let block = Block {
-            hash: "00000000abc".to_string(),
-            height: 800_000,
-            previous_block_hash: None,
-            next_block_hash: None,
-            tx: vec![
-                make_tx("tx1", Some("bc1qfirst"), vec![make_op_return_output(&op)]),
-                make_tx("tx2", Some("bc1qsecond"), vec![make_op_return_output(&op)]),
-            ],
-        };
+        let block = make_block("abc", 800_000, vec![
+            register_tx("tx1", &op),
+            register_tx("tx2", &op),
+        ]);
 
         let result = indexer.process_block(&block).unwrap();
         assert_eq!(result.registrations, 1);
         assert_eq!(result.skipped, 1);
 
         // First-in-block wins
-        let record = indexer
-            .store()
-            .get_name(&TitanName::new("westernbtc").unwrap())
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.owner_address, "bc1qfirst");
+        let record = indexer.store().get_name(&TitanName::new("westernbtc").unwrap()).unwrap().unwrap();
+        assert_eq!(record.owner_txid, "tx1");
     }
 
     #[test]
     fn process_block_valid_transfer() {
         let store = NameStore::open_memory().unwrap();
-        // Pre-register the name
-        store
-            .insert_name(
-                &TitanName::new("westernbtc").unwrap(),
-                &test_pubkey(),
-                "bc1qowner",
-                "tx0",
-                799_999,
-            )
-            .unwrap();
+        // Pre-register: owned by UTXO tx0:0
+        store.insert_name(
+            &TitanName::new("westernbtc").unwrap(),
+            &test_pubkey(), "tx0", 0, "tx0", 799_999,
+        ).unwrap();
 
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+        let indexer = Indexer::new(dummy_rpc(), store);
 
         let op = make_transfer_op("westernbtc");
-        let block = Block {
-            hash: "00000000def".to_string(),
-            height: 800_000,
-            previous_block_hash: None,
-            next_block_hash: None,
-            tx: vec![make_tx(
-                "tx1",
-                Some("bc1qowner"), // matches current owner
-                vec![make_op_return_output(&op)],
-            )],
-        };
+        // Transfer tx spends tx0:0 (the ownership UTXO)
+        let block = make_block("def", 800_000, vec![
+            transfer_tx("tx1", "tx0", 0, &op),
+        ]);
 
         let result = indexer.process_block(&block).unwrap();
         assert_eq!(result.transfers, 1);
         assert_eq!(result.skipped, 0);
 
-        let record = indexer
-            .store()
-            .get_name(&TitanName::new("westernbtc").unwrap())
-            .unwrap()
-            .unwrap();
+        let record = indexer.store().get_name(&TitanName::new("westernbtc").unwrap()).unwrap().unwrap();
         assert_eq!(record.pubkey, other_pubkey());
+        // New ownership UTXO is tx1:0
+        assert_eq!(record.owner_txid, "tx1");
+        assert_eq!(record.owner_vout, 0);
     }
 
     #[test]
     fn process_block_unauthorized_transfer() {
         let store = NameStore::open_memory().unwrap();
-        store
-            .insert_name(
-                &TitanName::new("westernbtc").unwrap(),
-                &test_pubkey(),
-                "bc1qowner",
-                "tx0",
-                799_999,
-            )
-            .unwrap();
+        store.insert_name(
+            &TitanName::new("westernbtc").unwrap(),
+            &test_pubkey(), "tx0", 0, "tx0", 799_999,
+        ).unwrap();
 
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+        let indexer = Indexer::new(dummy_rpc(), store);
 
         let op = make_transfer_op("westernbtc");
-        let block = Block {
-            hash: "00000000def".to_string(),
-            height: 800_000,
-            previous_block_hash: None,
-            next_block_hash: None,
-            tx: vec![make_tx(
-                "tx1",
-                Some("bc1qattacker"), // NOT the owner
-                vec![make_op_return_output(&op)],
-            )],
-        };
+        // Transfer tx spends "wrong_tx:0" — NOT the ownership UTXO
+        let block = make_block("def", 800_000, vec![
+            transfer_tx("tx1", "wrong_tx", 0, &op),
+        ]);
 
         let result = indexer.process_block(&block).unwrap();
         assert_eq!(result.transfers, 0);
         assert_eq!(result.skipped, 1);
 
         // Name unchanged
-        let record = indexer
-            .store()
-            .get_name(&TitanName::new("westernbtc").unwrap())
-            .unwrap()
-            .unwrap();
+        let record = indexer.store().get_name(&TitanName::new("westernbtc").unwrap()).unwrap().unwrap();
         assert_eq!(record.pubkey, test_pubkey());
+        assert_eq!(record.owner_txid, "tx0"); // still original
     }
 
     #[test]
     fn process_block_transfer_unregistered() {
-        let store = NameStore::open_memory().unwrap();
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+        let indexer = Indexer::new(dummy_rpc(), NameStore::open_memory().unwrap());
 
         let op = make_transfer_op("nonexistent");
-        let block = Block {
-            hash: "00000000abc".to_string(),
-            height: 800_000,
-            previous_block_hash: None,
-            next_block_hash: None,
-            tx: vec![make_tx(
-                "tx1",
-                Some("bc1qsomeone"),
-                vec![make_op_return_output(&op)],
-            )],
-        };
+        let block = make_block("abc", 800_000, vec![
+            transfer_tx("tx1", "whatever", 0, &op),
+        ]);
 
         let result = indexer.process_block(&block).unwrap();
         assert_eq!(result.transfers, 0);
@@ -508,43 +500,23 @@ mod tests {
     }
 
     #[test]
-    fn process_block_ignores_non_titn_outputs() {
-        let store = NameStore::open_memory().unwrap();
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+    fn process_block_ignores_non_nsit_outputs() {
+        let indexer = Indexer::new(dummy_rpc(), NameStore::open_memory().unwrap());
 
         let block = Block {
-            hash: "00000000abc".to_string(),
+            hash: "abc".to_string(),
             height: 800_000,
             previous_block_hash: None,
             next_block_hash: None,
             tx: vec![Transaction {
                 txid: "tx1".to_string(),
-                vin: vec![TxInput {
-                    txid: None,
-                    vout: None,
-                    prevout: None,
-                }],
+                vin: vec![TxInput { txid: None, vout: None, prevout: None }],
                 vout: vec![
-                    // Normal output (not OP_RETURN)
-                    TxOutput {
-                        n: 0,
-                        script_pub_key: ScriptPubKey {
-                            hex: "0014abcdef".to_string(),
-                            script_type: "witness_v0_keyhash".to_string(),
-                            address: Some("bc1q...".to_string()),
-                        },
-                    },
-                    // OP_RETURN but not NSIT
+                    normal_output(0),
                     TxOutput {
                         n: 1,
                         script_pub_key: ScriptPubKey {
-                            hex: "6a0468656c6c6f".to_string(), // OP_RETURN "hello"
+                            hex: "6a0468656c6c6f".to_string(),
                             script_type: "nulldata".to_string(),
                             address: None,
                         },
@@ -560,42 +532,57 @@ mod tests {
     }
 
     #[test]
-    fn process_block_mixed_operations() {
-        let store = NameStore::open_memory().unwrap();
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: String::new(),
-            user: String::new(),
-            password: String::new(),
-            wallet: None,
-        });
-        let indexer = Indexer::new(rpc, store);
+    fn process_block_mixed_registrations() {
+        let indexer = Indexer::new(dummy_rpc(), NameStore::open_memory().unwrap());
 
-        let reg1 = make_register_op("alpha");
-        let reg2 = make_register_op("beta");
-
-        let block = Block {
-            hash: "00000000abc".to_string(),
-            height: 800_000,
-            previous_block_hash: None,
-            next_block_hash: None,
-            tx: vec![
-                make_tx("tx1", Some("bc1qa"), vec![make_op_return_output(&reg1)]),
-                make_tx("tx2", Some("bc1qb"), vec![make_op_return_output(&reg2)]),
-            ],
-        };
+        let block = make_block("abc", 800_000, vec![
+            register_tx("tx1", &make_register_op("alpha")),
+            register_tx("tx2", &make_register_op("beta")),
+        ]);
 
         let result = indexer.process_block(&block).unwrap();
         assert_eq!(result.registrations, 2);
 
-        assert!(indexer
-            .store()
-            .get_name(&TitanName::new("alpha").unwrap())
-            .unwrap()
-            .is_some());
-        assert!(indexer
-            .store()
-            .get_name(&TitanName::new("beta").unwrap())
-            .unwrap()
-            .is_some());
+        assert!(indexer.store().get_name(&TitanName::new("alpha").unwrap()).unwrap().is_some());
+        assert!(indexer.store().get_name(&TitanName::new("beta").unwrap()).unwrap().is_some());
+    }
+
+    #[test]
+    fn transfer_chain() {
+        // Register → transfer → transfer again, each time ownership UTXO moves
+        let store = NameStore::open_memory().unwrap();
+        store.insert_name(
+            &TitanName::new("myname").unwrap(),
+            &test_pubkey(), "reg_tx", 0, "reg_tx", 100,
+        ).unwrap();
+
+        let indexer = Indexer::new(dummy_rpc(), store);
+
+        // First transfer: spend reg_tx:0
+        let op1 = make_transfer_op("myname");
+        let block1 = make_block("b1", 101, vec![
+            transfer_tx("xfer1", "reg_tx", 0, &op1),
+        ]);
+        indexer.process_block(&block1).unwrap();
+
+        let record = indexer.store().get_name(&TitanName::new("myname").unwrap()).unwrap().unwrap();
+        assert_eq!(record.owner_txid, "xfer1");
+        assert_eq!(record.owner_vout, 0);
+
+        // Second transfer: spend xfer1:0
+        let op2 = titan_types::TitanOp {
+            action: OpAction::Transfer,
+            name: TitanName::new("myname").unwrap(),
+            pubkey: test_pubkey(), // back to original pubkey
+        };
+        let block2 = make_block("b2", 102, vec![
+            transfer_tx("xfer2", "xfer1", 0, &op2),
+        ]);
+        indexer.process_block(&block2).unwrap();
+
+        let record = indexer.store().get_name(&TitanName::new("myname").unwrap()).unwrap().unwrap();
+        assert_eq!(record.owner_txid, "xfer2");
+        assert_eq!(record.owner_vout, 0);
+        assert_eq!(record.pubkey, test_pubkey());
     }
 }

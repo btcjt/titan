@@ -21,7 +21,8 @@ const LINGER_DURATION: Duration = Duration::from_millis(200);
 pub struct NsitNameRecord {
     pub name: String,
     pub pubkey_hex: String,
-    pub owner_address: String,
+    pub owner_txid: String,
+    pub owner_vout: u32,
     pub txid: String,
     pub block_height: u64,
 }
@@ -281,7 +282,8 @@ impl RelayPool {
 
         // Parse tags into a name record
         let mut pubkey_hex = String::new();
-        let mut owner_address = String::new();
+        let mut owner_txid = String::new();
+        let mut owner_vout: u32 = 0;
         let mut txid = String::new();
         let mut block_height: u64 = 0;
 
@@ -289,7 +291,10 @@ impl RelayPool {
             let values: Vec<&str> = tag.as_slice().iter().map(|s| s.as_str()).collect();
             match values.first().copied() {
                 Some("p") if values.len() >= 2 => pubkey_hex = values[1].to_string(),
-                Some("owner") if values.len() >= 2 => owner_address = values[1].to_string(),
+                Some("owner_txid") if values.len() >= 2 => owner_txid = values[1].to_string(),
+                Some("owner_vout") if values.len() >= 2 => {
+                    owner_vout = values[1].parse().unwrap_or(0);
+                }
                 Some("txid") if values.len() >= 2 => txid = values[1].to_string(),
                 Some("block") if values.len() >= 2 => {
                     block_height = values[1].parse().unwrap_or(0);
@@ -307,7 +312,8 @@ impl RelayPool {
         Ok(Some(NsitNameRecord {
             name: name.to_string(),
             pubkey_hex,
-            owner_address,
+            owner_txid,
+            owner_vout,
             txid,
             block_height,
         }))
