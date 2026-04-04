@@ -135,7 +135,9 @@ impl Resolver {
             .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
 
         // Step 1: Get the manifest (cached or fresh)
+        let t0 = std::time::Instant::now();
         let manifest = self.get_manifest(&public_key, &pubkey_hex, site_name).await?;
+        debug!("manifest fetched in {:?}", t0.elapsed());
 
         // Step 2: Resolve the path to a blob hash
         let hash = manifest
@@ -144,9 +146,11 @@ impl Resolver {
             .to_string();
 
         // Step 3: Fetch the blob (cached or fresh)
+        let t1 = std::time::Instant::now();
         let data = self
             .get_blob(&hash, &public_key, &pubkey_hex, &manifest)
             .await?;
+        debug!("blob fetched in {:?} (hash: {})", t1.elapsed(), &hash[..12]);
 
         Ok(ResolvedContent {
             data,
@@ -178,14 +182,21 @@ impl Resolver {
             }
         }
 
-        // Discover pubkey's relays and add them to the pool
-        let relay_urls = self.get_relay_list(pubkey, pubkey_hex).await;
+        // Fetch manifest and relay list concurrently — don't block manifest
+        // on relay discovery since we already have fallback relays connected
+        let t_manifest = std::time::Instant::now();
+        let (manifest_result, relay_urls) = tokio::join!(
+            self.relays.fetch_manifest(pubkey, site_name),
+            self.get_relay_list(pubkey, pubkey_hex),
+        );
+        debug!("manifest + relay list fetched in {:?}", t_manifest.elapsed());
+
+        // Add discovered relays for future queries
         if !relay_urls.is_empty() {
             self.relays.add_relays(&relay_urls).await;
         }
 
-        // Fetch v2 manifest from relays
-        if let Some(event) = self.relays.fetch_manifest(pubkey, site_name).await? {
+        if let Some(event) = manifest_result? {
             // Cache the event
             if let Ok(json) = serde_json::to_vec(&event) {
                 let _ = self.cache.put_manifest(&cache_key, &json);
@@ -250,22 +261,24 @@ impl Resolver {
             return Ok(cached);
         }
 
-        // Build server list: manifest servers → pubkey's blossom list → fallbacks
+        // Build server list: manifest servers → fallbacks → blossom list (if needed)
         let mut servers: Vec<String> = manifest.servers.clone();
 
-        // Add pubkey's blossom server list
-        let blossom_servers = self.get_blossom_list(pubkey, pubkey_hex).await;
-        for s in blossom_servers {
+        // Add fallbacks immediately — don't wait for a Nostr query
+        for s in FALLBACK_BLOSSOM_SERVERS {
+            let s = s.to_string();
             if !servers.contains(&s) {
                 servers.push(s);
             }
         }
 
-        // Add fallbacks
-        for s in FALLBACK_BLOSSOM_SERVERS {
-            let s = s.to_string();
-            if !servers.contains(&s) {
-                servers.push(s);
+        // Only query kind 10063 if we have no servers at all (unlikely with fallbacks)
+        if servers.is_empty() {
+            let blossom_servers = self.get_blossom_list(pubkey, pubkey_hex).await;
+            for s in blossom_servers {
+                if !servers.contains(&s) {
+                    servers.push(s);
+                }
             }
         }
 

@@ -75,6 +75,8 @@
 - [ ] GitHub Actions CI (build + test + release)
 
 ## Future
+- Loading diagnostics: show why a site is slow (no kind 10002 relay list, no kind 10063 Blossom list, missing server tags in manifest, relay timeouts)
+- Publish kind 10002 (relay list) and kind 10063 (Blossom server list) for the titan npub
 - Tab support
 - Bookmarks + history
 - Extension system

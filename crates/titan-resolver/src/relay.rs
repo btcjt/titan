@@ -11,10 +11,19 @@ use tokio_stream::StreamExt;
 use tracing::{debug, warn};
 
 /// Maximum time to wait for the first event from any relay.
-const FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Shorter timeout for relay list discovery (kind 10002).
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// After the first event arrives, how long to wait for additional relays.
 const LINGER_DURATION: Duration = Duration::from_millis(200);
+
+/// NIP-65 discovery relays — where pubkeys publish their relay lists.
+const DISCOVERY_RELAYS: &[&str] = &[
+    "wss://purplepag.es",
+    "wss://user.kindpag.es",
+];
 
 /// A name record from the NSIT Nostr index (kind 35129).
 #[derive(Debug, Clone)]
@@ -43,7 +52,17 @@ impl RelayPool {
             }
         }
 
+        // Add NIP-65 discovery relays for relay list lookups
+        for url in DISCOVERY_RELAYS {
+            if let Err(e) = client.add_relay(*url).await {
+                debug!("failed to add discovery relay {url}: {e}");
+            }
+        }
+
         client.connect().await;
+
+        // Brief warmup — let WebSocket handshakes complete before first query
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         Ok(Self { client })
     }
@@ -96,7 +115,10 @@ impl RelayPool {
     }
 
     /// Fetch the relay list (kind 10002) for a pubkey.
-    /// Returns a list of relay URLs the pubkey has advertised.
+    ///
+    /// Queries NIP-65 discovery relays (purplepag.es, kindpag.es) with a short
+    /// timeout. If no relay list is found, returns empty — the caller falls
+    /// back to the hardcoded relays.
     pub async fn fetch_relay_list(
         &self,
         pubkey: &PublicKey,
@@ -105,13 +127,41 @@ impl RelayPool {
             .author(*pubkey)
             .kind(Kind::RelayList);
 
-        let events = self.race_fetch(filter).await?;
+        // Query discovery relays with a short timeout
+        let mut stream = self
+            .client
+            .stream_events(vec![filter], Some(DISCOVERY_TIMEOUT))
+            .await
+            .map_err(|e| RelayError::Fetch(e.to_string()))?;
+
+        let mut events: Vec<Event> = Vec::new();
+
+        // Race-then-linger with short timeout
+        match tokio::time::timeout(DISCOVERY_TIMEOUT, stream.next()).await {
+            Ok(Some(event)) => {
+                events.push(event);
+                // Brief linger
+                let deadline = tokio::time::Instant::now() + LINGER_DURATION;
+                loop {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() { break; }
+                    match tokio::time::timeout(remaining, stream.next()).await {
+                        Ok(Some(event)) => events.push(event),
+                        _ => break,
+                    }
+                }
+            }
+            _ => {
+                debug!("no relay list found for {pubkey} (discovery timeout)");
+                return Ok(vec![]);
+            }
+        }
+
         let event = match Self::newest_event(events) {
             Some(e) => e,
             None => return Ok(vec![]),
         };
 
-        // Kind 10002 tags: ["r", "wss://relay.example.com"] or ["r", "wss://...", "read"]
         let urls: Vec<String> = event
             .tags
             .iter()
