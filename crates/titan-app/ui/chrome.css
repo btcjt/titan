@@ -1,0 +1,129 @@
+/* Titan chrome — toolbar only */
+
+:root {
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #141414;
+  --bg-tertiary: #1c1c1c;
+  --bg-input: #111111;
+  --amber: #d48f00;
+  --amber-dim: #a06800;
+  --amber-glow: #d48f0030;
+  --text-primary: #e8e0d4;
+  --text-secondary: #8a7f70;
+  --text-muted: #5a5348;
+  --border: #2a2520;
+  --border-focus: #d48f0060;
+  --radius: 6px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+#toolbar button,
+#address-bar-container,
+#address-bar {
+  -webkit-app-region: no-drag;
+}
+
+#toolbar button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+#toolbar button:hover:not(:disabled) {
+  background: var(--bg-primary);
+  color: var(--amber);
+  border-color: var(--amber-dim);
+}
+
+#toolbar button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+#toolbar button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+#address-bar-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  height: 32px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#address-bar-container:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px var(--amber-glow);
+}
+
+#scheme-badge {
+  color: var(--amber-dim);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  margin-right: 2px;
+  letter-spacing: -0.3px;
+}
+
+#address-bar {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  height: 100%;
+}
+
+#address-bar::placeholder {
+  color: var(--text-muted);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-style: italic;
+}
+
+#status-bar {
+  padding: 3px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 20px;
+}

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Titan</title>
+  <link rel="stylesheet" href="chrome.css">
+</head>
+<body>
+  <div id="toolbar">
+    <button id="btn-back" title="Back" disabled>&#x2190;</button>
+    <button id="btn-forward" title="Forward" disabled>&#x2192;</button>
+    <button id="btn-refresh" title="Refresh">&#x21BB;</button>
+    <div id="address-bar-container">
+      <span id="scheme-badge">nsite://</span>
+      <input
+        id="address-bar"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="enter a name or npub..."
+      >
+    </div>
+  </div>
+  <div id="status-bar">
+    <span id="status-text">Ready</span>
+  </div>
+  <script src="chrome.js"></script>
+</body>
+</html>
