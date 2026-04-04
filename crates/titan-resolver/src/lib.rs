@@ -40,6 +40,10 @@ pub const FALLBACK_BLOSSOM_SERVERS: &[&str] = &[
     "https://nostr.build",
 ];
 
+/// Default NSIT indexer pubkey (signs kind 35129/15129 events).
+pub const INDEXER_PUBKEY_HEX: &str =
+    "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44";
+
 /// Resolved content ready for rendering.
 pub struct ResolvedContent {
     /// The raw bytes of the resolved file.
@@ -85,6 +89,32 @@ impl Resolver {
             blossom,
             cache,
         })
+    }
+
+    /// Look up a Bitcoin name via the Nostr-published NSIT index (kind 35129).
+    /// Uses race-then-linger for fast results from the first relay that responds.
+    /// Returns the 32-byte pubkey if the name is found, or None.
+    pub async fn lookup_name(&self, name: &str) -> Result<Option<[u8; 32]>, ResolverError> {
+        let indexer_pubkey = PublicKey::from_hex(INDEXER_PUBKEY_HEX)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+
+        let record = self.relays.lookup_nsit_name(name, &indexer_pubkey).await?;
+
+        match record {
+            Some(r) => {
+                let bytes = hex::decode(&r.pubkey_hex)
+                    .map_err(|e| ResolverError::ManifestNotFound(e.to_string()))?;
+                if bytes.len() != 32 {
+                    return Err(ResolverError::ManifestNotFound(
+                        "invalid pubkey length in NSIT record".to_string(),
+                    ));
+                }
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&bytes);
+                Ok(Some(pk))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Resolve a pubkey + path to content bytes.
@@ -154,24 +184,33 @@ impl Resolver {
             self.relays.add_relays(&relay_urls).await;
         }
 
-        // Fetch manifest from relays
-        let event = self
-            .relays
-            .fetch_manifest(pubkey, site_name)
-            .await?
-            .ok_or_else(|| ResolverError::ManifestNotFound(pubkey_hex.to_string()))?;
+        // Fetch v2 manifest from relays
+        if let Some(event) = self.relays.fetch_manifest(pubkey, site_name).await? {
+            // Cache the event
+            if let Ok(json) = serde_json::to_vec(&event) {
+                let _ = self.cache.put_manifest(&cache_key, &json);
+            }
 
-        // Cache the event
-        if let Ok(json) = serde_json::to_vec(&event) {
-            let _ = self.cache.put_manifest(&cache_key, &json);
+            let manifest = Manifest::from_event(&event)?;
+            info!(
+                "fetched v2 manifest for {pubkey_hex}: {} file(s)",
+                manifest.files.len()
+            );
+            return Ok(manifest);
         }
 
-        let manifest = Manifest::from_event(&event)?;
-        info!(
-            "fetched manifest for {pubkey_hex}: {} file(s)",
-            manifest.files.len()
-        );
-        Ok(manifest)
+        // Fall back to v1 (kind 34128 per-file events)
+        let v1_events = self.relays.fetch_v1_file_events(pubkey).await?;
+        if !v1_events.is_empty() {
+            let manifest = Manifest::from_v1_events(&v1_events)?;
+            info!(
+                "assembled v1 manifest for {pubkey_hex}: {} file(s)",
+                manifest.files.len()
+            );
+            return Ok(manifest);
+        }
+
+        Err(ResolverError::ManifestNotFound(pubkey_hex.to_string()))
     }
 
     /// Get or fetch the relay list for a pubkey.

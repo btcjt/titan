@@ -1,6 +1,6 @@
 # Titan: Solving the Last Problem of the Decentralized Web
 
-**I'm giving everybody a 15-minute head start. Starting from the timestamp on this post, I won't register a single name. After that, it's open season — for me and everyone else.**
+**I'm giving everybody a 15-minute head start. Starting from the timestamp on this post. I've registered two names for testing: titan and westernbtc. Every other name is untouched. After that, it's open season — for me and everyone else.**
 
 Read on to understand what that means.
 
@@ -12,9 +12,9 @@ Nostr solved identity. Blossom solved storage. NIP-5A solved hosting. But there'
 npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
 ```
 
-Go ahead. Try to type that from memory. Try to read it to someone over the phone. Try putting it on a poster.
+Go ahead. Try to type that from memory. Try to read it to someone over the phone. Maybe you could put a QR code on a poster.
 
-You can't. And that's been the bottleneck for the entire Nostr web. You can build a site, host it on Blossom, serve it through relays — but the only way to reach it is through a 63-character string of gibberish, or through a gateway that quietly reintroduces the same DNS dependency you were trying to escape.
+For most of these, you can't. And that's been the bottleneck for the entire Nostr web. You can build a site, host it on Blossom, serve it through relays — but the only way to reach it is through a 63-character string of gibberish, or through a gateway that quietly reintroduces the same DNS dependency you were trying to escape.
 
 ## The Domain Name Problem
 
@@ -29,12 +29,12 @@ The Nostr web needed its own name system. One that's truly decentralized. One wh
 Titan is a native desktop browser that resolves `nsite://` URLs. When you type:
 
 ```
-nsite://westernbtc
+nsite://titan
 ```
 
-Titan looks up "westernbtc" in a name index, gets the associated Nostr public key, fetches the site manifest from relays, downloads the content from Blossom servers, and renders it — all without ever touching DNS, a certificate authority, or a traditional hosting provider.
+The Titan browser looks up "titan" in a name index, gets the associated Nostr public key, fetches the site manifest from relays, downloads the content from Blossom servers, and renders it — all without ever touching DNS, a certificate authority, or a traditional hosting provider.
 
-The name "westernbtc" is registered directly on the Bitcoin blockchain using an OP_RETURN transaction. It costs about $0.10. It takes one confirmation. And it lasts forever.
+The name "titan" is registered directly on the Bitcoin blockchain using an OP_RETURN transaction. It costs about $0.10. It takes one confirmation. And it lasts forever.
 
 ## How the Name Protocol Works
 
@@ -78,26 +78,29 @@ That's the 15 minutes. I'm giving you a head start on myself. After that, I'm cl
 
 As Satoshi put it:
 
-> *"It might make sense just to get some in case it catches on."*
+> _"It might make sense just to get some in case it catches on."_
 
 ## What Titan Is (and Isn't)
 
-Titan is a browser — specifically, a native desktop app built in Rust that understands the `nsite://` protocol. It's not a website. You download it and run it. It connects directly to Nostr relays and Blossom servers. It maintains its own Bitcoin name index by scanning OP_RETURN transactions.
+Titan is a browser — specifically, a native desktop app built in Rust that understands the `nsite://` protocol. It's not a website. You download it and run it. It connects directly to Nostr relays and Blossom servers. It doesn't need Bitcoin Core to work — name lookups happen through Nostr events published by an indexer service that watches the blockchain.
+
+You can also register names without Titan. Visit `nsite://titan` in the browser and it generates the OP_RETURN hex for you. Paste it into Sparrow, Electrum, or any wallet that supports custom OP_RETURN outputs. The address you send from becomes the owner.
 
 For MVP, it's minimal: an address bar and a webview. No tabs, no extensions, no bookmarks. You type a name, you see a site. That's the product.
 
-What matters isn't the chrome around the browser. What matters is the protocol underneath. `nsite://` is an open scheme. Other browsers can implement it. Other indexers can scan the same OP_RETURNs and build the same name table. Titan is the first client, not the only one.
+What matters isn't the chrome around the browser. What matters is the protocol underneath. `nsite://` is an open scheme. Other browsers can implement it. Other indexers can scan the same OP_RETURNs and publish the same name events. Titan is the first client, not the only one.
 
 ## The Stack
 
 For the technically curious:
 
 - **Names**: Bitcoin OP_RETURN (NSIT prefix, x-only Schnorr pubkeys)
+- **Name index**: Nostr events (kind 35129/15129 — no Bitcoin Core needed for lookups)
 - **Sites**: NIP-5A v2 (kind 15128/35128 manifests, path→SHA256 mappings)
 - **Storage**: Blossom servers (content-addressed blob hosting)
-- **Discovery**: Nostr relays (event fetching, relay lists)
+- **Discovery**: Nostr relays (race-then-linger search for fast results)
 - **Client**: Rust + Tauri (system webview, cross-platform)
-- **Index**: SQLite (local, deterministic, built from the blockchain)
+- **Registration**: Client-side OP_RETURN generator (paste into any Bitcoin wallet)
 
 Everything is open source: [github.com/btcjt/titan](https://github.com/btcjt/titan)
 
@@ -109,4 +112,4 @@ Your 15 minutes started at the top of this post. Clock's ticking.
 
 ---
 
-*Titan is named after Titan, the largest moon of Saturn — shrouded in a dense amber atmosphere, hiding an entire world beneath.*
+_Titan is named after Titan, the largest moon of Saturn — shrouded in a dense amber atmosphere, hiding an entire world beneath._

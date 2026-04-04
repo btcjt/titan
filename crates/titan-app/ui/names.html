@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Titan — Name Manager</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { overflow: auto; }
+
+    .nm-container { max-width: 680px; margin: 0 auto; padding: 32px 24px; }
+
+    .nm-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    .nm-header .logo { font-size: 28px; color: var(--amber); }
+    .nm-header h1 { font-size: 22px; font-weight: 300; letter-spacing: 3px; text-transform: uppercase; }
+
+    .nm-section { margin-bottom: 32px; }
+    .nm-section h2 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--amber);
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-bottom: 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nm-search {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .nm-search input {
+      flex: 1;
+      padding: 10px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 15px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .nm-search input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px var(--amber-glow);
+    }
+    .nm-search input::placeholder {
+      color: var(--text-muted);
+      font-family: inherit;
+      font-style: italic;
+    }
+    .nm-btn {
+      padding: 10px 18px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .nm-btn:hover { color: var(--amber); border-color: var(--amber-dim); }
+    .nm-btn:disabled { opacity: 0.3; cursor: default; }
+    .nm-btn.primary {
+      background: var(--amber-dim);
+      border-color: var(--amber);
+      color: var(--bg-primary);
+      font-weight: 500;
+    }
+    .nm-btn.primary:hover { background: var(--amber); }
+
+    .nm-result {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: none;
+    }
+    .nm-result.visible { display: block; }
+    .nm-result .name { font-size: 18px; color: var(--amber); font-family: "SF Mono", "Fira Code", monospace; margin-bottom: 10px; }
+    .nm-result .field { display: flex; gap: 8px; margin-bottom: 4px; font-size: 13px; }
+    .nm-result .field .label { color: var(--text-muted); min-width: 70px; }
+    .nm-result .field .value { color: var(--text-secondary); font-family: "SF Mono", "Fira Code", monospace; word-break: break-all; }
+    .available { color: #5a5; }
+    .taken { color: var(--amber-dim); }
+
+    .nm-register {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      display: none;
+    }
+    .nm-register.visible { display: block; }
+    .nm-register label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .nm-register input {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 13px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      outline: none;
+      margin-bottom: 12px;
+    }
+    .nm-register input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px var(--amber-glow);
+    }
+
+    .nm-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .nm-stat {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      text-align: center;
+    }
+    .nm-stat .value { font-size: 20px; font-weight: 500; color: var(--amber); font-family: "SF Mono", "Fira Code", monospace; }
+    .nm-stat .label { font-size: 11px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+
+    .nm-msg {
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      margin-top: 12px;
+      display: none;
+    }
+    .nm-msg.visible { display: block; }
+    .nm-msg.success { background: #1a2e1a; border: 1px solid #2a4a2a; color: #6b6; }
+    .nm-msg.error { background: #2e1a1a; border: 1px solid #4a2a2a; color: #c66; }
+  </style>
+</head>
+<body>
+  <div class="nm-container">
+    <div class="nm-header">
+      <span class="logo">&#x25C8;</span>
+      <h1>Name Manager</h1>
+    </div>
+
+    <div class="nm-section">
+      <h2>Lookup</h2>
+      <div class="nm-search">
+        <input id="lookup-input" type="text" placeholder="search for a name..." spellcheck="false" autocomplete="off">
+        <button class="nm-btn" id="lookup-btn">Lookup</button>
+      </div>
+      <div class="nm-result" id="lookup-result">
+        <div class="name" id="result-name"></div>
+        <div class="field"><span class="label">Status</span><span class="value" id="result-status"></span></div>
+        <div id="result-details"></div>
+        <div class="nm-register" id="register-section">
+          <label>Pubkey (hex) to register this name to</label>
+          <input id="register-pubkey" type="text" placeholder="32-byte hex pubkey (64 chars)..." spellcheck="false">
+          <button class="nm-btn primary" id="register-btn">Register on Bitcoin</button>
+        </div>
+      </div>
+      <div class="nm-msg" id="result-msg"></div>
+    </div>
+
+    <div class="nm-section">
+      <h2>Index</h2>
+      <div class="nm-stats">
+        <div class="nm-stat">
+          <div class="value" id="stat-height">—</div>
+          <div class="label">Block height</div>
+        </div>
+        <div class="nm-stat">
+          <div class="value" id="stat-connected">—</div>
+          <div class="label">Bitcoin Core</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    const lookupInput = document.getElementById('lookup-input');
+    const lookupBtn = document.getElementById('lookup-btn');
+    const lookupResult = document.getElementById('lookup-result');
+    const resultName = document.getElementById('result-name');
+    const resultStatus = document.getElementById('result-status');
+    const resultDetails = document.getElementById('result-details');
+    const registerSection = document.getElementById('register-section');
+    const registerPubkey = document.getElementById('register-pubkey');
+    const registerBtn = document.getElementById('register-btn');
+    const resultMsg = document.getElementById('result-msg');
+
+    // ── Lookup ──
+
+    async function doLookup() {
+      const name = lookupInput.value.trim().toLowerCase();
+      if (!name) return;
+
+      hideMsg();
+      lookupResult.classList.remove('visible');
+      registerSection.classList.remove('visible');
+
+      try {
+        const r = await invoke('lookup_name', { name });
+        resultName.textContent = r.name;
+        lookupResult.classList.add('visible');
+
+        if (r.available) {
+          resultStatus.textContent = 'Available';
+          resultStatus.className = 'value available';
+          resultDetails.innerHTML = '';
+          registerSection.classList.add('visible');
+        } else {
+          resultStatus.textContent = 'Registered';
+          resultStatus.className = 'value taken';
+          resultDetails.innerHTML = `
+            <div class="field"><span class="label">Pubkey</span><span class="value">${r.pubkey}</span></div>
+            <div class="field"><span class="label">Owner</span><span class="value">${r.owner_address}</span></div>
+            <div class="field"><span class="label">Block</span><span class="value">${r.block_height?.toLocaleString()}</span></div>
+            <div class="field"><span class="label">Txid</span><span class="value">${r.txid}</span></div>
+          `;
+        }
+      } catch (e) {
+        showMsg(typeof e === 'string' ? e : e.message || JSON.stringify(e), 'error');
+      }
+    }
+
+    lookupBtn.addEventListener('click', doLookup);
+    lookupInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLookup(); });
+
+    // ── Register ──
+
+    registerBtn.addEventListener('click', async () => {
+      const name = lookupInput.value.trim().toLowerCase();
+      const pubkey = registerPubkey.value.trim();
+
+      if (!name || !pubkey) {
+        showMsg('Enter a name and pubkey', 'error');
+        return;
+      }
+      if (pubkey.length !== 64) {
+        showMsg('Pubkey must be 64 hex characters (32 bytes)', 'error');
+        return;
+      }
+
+      registerBtn.disabled = true;
+      registerBtn.textContent = 'Broadcasting...';
+      hideMsg();
+
+      try {
+        const r = await invoke('register_name', { name, pubkeyHex: pubkey });
+        showMsg(`Registered "${r.name}"! TXID: ${r.txid} (fee: ${r.fee_sats} sats)`, 'success');
+        registerSection.classList.remove('visible');
+      } catch (e) {
+        showMsg(typeof e === 'string' ? e : e.message || JSON.stringify(e), 'error');
+      } finally {
+        registerBtn.disabled = false;
+        registerBtn.textContent = 'Register on Bitcoin';
+      }
+    });
+
+    // ── Stats ──
+
+    async function loadStats() {
+      try {
+        const s = await invoke('get_index_stats');
+        document.getElementById('stat-connected').textContent = s.connected ? 'Connected' : 'Offline';
+        document.getElementById('stat-height').textContent = s.block_height?.toLocaleString() || '—';
+      } catch (e) {
+        document.getElementById('stat-connected').textContent = 'Error';
+      }
+    }
+
+    loadStats();
+    setInterval(loadStats, 30000);
+
+    // ── Helpers ──
+
+    function showMsg(text, type) {
+      resultMsg.textContent = text;
+      resultMsg.className = `nm-msg visible ${type}`;
+    }
+    function hideMsg() {
+      resultMsg.classList.remove('visible');
+    }
+
+    lookupInput.focus();
+  </script>
+</body>
+</html>

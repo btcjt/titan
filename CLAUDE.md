@@ -10,9 +10,10 @@ A native desktop browser that resolves `nsite://` URLs using Nostr relays and re
 
 - **Language**: Rust (edition 2024)
 - **Desktop framework**: Tauri 2 (system webview, cross-platform)
-- **Database**: SQLite via rusqlite (bundled)
-- **Nostr**: nostr-sdk for relay connections
-- **Bitcoin**: Core RPC for scanning OP_RETURN transactions
+- **Database**: SQLite via rusqlite (bundled, optional local cache)
+- **Nostr**: nostr-sdk for relay connections + race-then-linger search
+- **Bitcoin**: Core RPC for scanning OP_RETURN transactions (optional)
+- **Name index**: Nostr events (kind 35129/15129) as primary, SQLite as fallback
 - **Theme**: Titan moon of Saturn — dark/black with amber accents
 
 ## Repo Structure
@@ -22,12 +23,18 @@ Cargo workspace with 4 crates:
 ```
 crates/
   titan-types/      Core types: TitanName, TitanOp, NsiteUrl, errors
-  titan-bitcoin/    OP_RETURN codec, block scanner, SQLite name index
-  titan-resolver/   Nostr relay queries, Blossom blob fetching, disk cache
-  titan-app/        Tauri desktop shell + nsite:// protocol handler
+  titan-bitcoin/    OP_RETURN codec, block scanner, SQLite name index, tx builder
+  titan-resolver/   Nostr relay queries, Blossom blob fetching, disk cache, name lookup
+  titan-app/        Tauri desktop shell + nsite:// protocol handler + name manager
 ```
 
-## Bitcoin Name Protocol (TNP)
+Related (in westernbtc-monorepo):
+```
+apps/titan-nsite/        Static nsite at nsite://titan (name manager UI, OP_RETURN generator)
+services/nsit-indexer/   k8s service: watches Bitcoin blocks, publishes name index as Nostr events
+```
+
+## Bitcoin Name Protocol
 
 OP_RETURN wire format (80 bytes max):
 
@@ -42,6 +49,7 @@ Offset  Size  Field       Description
 ```
 
 - First-in-chain wins for registration
+- Same-block conflicts: lower transaction index wins
 - Transfer: first input must spend from current owner address
 - Names: lowercase only, DNS-like charset, max 41 chars
 - Mainnet only
@@ -58,13 +66,19 @@ path = file path within manifest (default: /)
 No extensions, no subdomains, no TLDs. One name = one site.
 
 Reserved hosts: `settings`, `history`, `bookmarks` (browser internals).
-`nsite://titan` is not reserved — it's a real registered name serving the name manager UI through the nsite stack itself.
+`nsite://titan` is a real registered name serving the name manager UI through the nsite stack itself.
 
 ## Resolution Flow
 
+Name resolution uses a three-tier strategy with race-then-linger search:
+
+**1. Sync parse** (instant): npub bech32 decode, hex pubkey, base36, local SQLite lookup
+**2. Nostr index** (fast): kind 35129 from indexer service, race-then-linger from relays
+**3. Not found**: name is unregistered
+
 **Bitcoin name** (`nsite://westernbtc`):
 ```
-westernbtc → SQLite index → pubkey
+westernbtc → Nostr index (kind 35129, d=westernbtc) → pubkey
   → Relays: kind 10002 (relay list)
   → Relays: kind 35128 (manifest, d=westernbtc)
   → Blossom: SHA256 hash → blob → render
@@ -78,57 +92,82 @@ npub → pubkey (bech32 decode)
   → Blossom: SHA256 hash → blob → render
 ```
 
-The address type determines the manifest kind:
-- Name → kind 35128 (addressable, d-tag = the registered name)
-- npub → kind 15128 (root, one per pubkey)
+## Nostr Name Index (published by nsit-indexer service)
 
-Want multiple sites? Register multiple names. Each points to the same
-pubkey but publishes a separate kind 35128 manifest with d=that-name.
+- **Kind 35129** (addressable, d=name): name record — pubkey, owner address, txid, block height
+- **Kind 15129** (replaceable): index stats — block height, hash, total names
+- **Indexer pubkey**: `bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44`
+- Race-then-linger query: first relay response + 200ms linger window, newest event wins
+
+## Race-Then-Linger Search
+
+All Nostr queries use the same custom search pattern:
+1. Subscribe to filter, stream events
+2. On first event received, start 200ms linger timer
+3. Collect any additional events that arrive within the linger window
+4. Return the newest event by `created_at`
+
+This gives fast perceived latency while still picking up fresher data from slower relays.
 
 ## Hardcoded Fallbacks
 
 Relays: wss://relay.westernbtc.com, wss://relay.primal.net, wss://relay.damus.io
-Blossom: https://blossom.westernbtc.com, https://nostr.build
+Blossom: https://blossom.westernbtc.com
 
 ## Caching Strategy
 
-- Name index: SQLite, always fresh (updated per block)
+- Name index: Nostr events (primary), SQLite (optional local cache)
 - Manifests (kind 15128/35128): 5 min TTL
 - Relay lists (kind 10002): 1 hour TTL
 - Blobs: forever (content-addressed, immutable)
 - Blossom server lists (kind 10063): 1 hour TTL
 
+## nsite Versions
+
+- **v1** (nsite-cli): Kind 34128, one event per file, d=path, x=sha256
+- **v2** (NIP-5A): Kind 15128 (root) / 35128 (named), single manifest with path tags
+- Titan resolver supports both (v2 preferred, v1 fallback)
+- Titan publishes v2 only
+
 ## Build Phases
 
-1. ~~Types + OP_RETURN codec~~ (DONE — 13 tests passing)
-2. ~~Bitcoin RPC client + SQLite store~~ (DONE — 26 tests passing)
-3. ~~Block scanner / indexer~~ (DONE — 33 tests passing)
-4. ~~Nostr resolver (relays + Blossom)~~ (DONE — 47 tests passing)
-5. ~~Tauri browser shell + protocol handler~~ (DONE — 51 tests passing)
-6. ~~Integration + error states~~ (DONE — 54 tests passing)
-7. Name Manager — `nsite://titan` (dogfooded nsite: lookup, register, transfer, stats)
+1. ~~Types + OP_RETURN codec~~ (DONE)
+2. ~~Bitcoin RPC client + SQLite store~~ (DONE)
+3. ~~Block scanner / indexer~~ (DONE)
+4. ~~Nostr resolver (relays + Blossom)~~ (DONE)
+5. ~~Tauri browser shell + protocol handler~~ (DONE)
+6. ~~Integration + error states~~ (DONE — 57 tests, nsite://titan live)
+7. ~~Name Manager + Nostr Index~~ (DONE — nsite://titan with NDK lookups, nsit-indexer service, built-in browser name manager)
 8. Distribution (dmg/AppImage/msi, GitHub Actions)
 
 ## Key Decisions Made
 
 - Tauri over Electron/CEF (small binary, system webview)
 - nostr-sdk over raw nostr crate (includes relay pool)
-- Bitcoin Core RPC over Electrum (user already runs a node)
-- Embedded indexer in app (no separate server for MVP)
-- x-only 32-byte pubkeys (matches Nostr, saves 1 byte vs compressed)
+- Nostr-published name index as primary (no Bitcoin Core requirement for browsers)
+- SQLite as optional local cache/verification, not a requirement
+- Race-then-linger search for all Nostr queries (fast + fresh)
 - "NSIT" 4-byte magic prefix (protocol name, not browser name)
-- SQLite with bundled feature (no system dependency)
 - `nsite://` scheme (protocol name, not browser name — other browsers could implement)
-- Name = site: registered Bitcoin name IS the d-tag for kind 35128, no separate site-name concept
+- Name = site: registered Bitcoin name IS the d-tag for kind 35128
 - npub = root site: kind 15128, one per pubkey, no d-tag needed
-- No file extensions in URLs (no .nsite, no .com) — the scheme is the protocol signal
-- Sub-resources served via `nsite-content://` custom Tauri protocol for transparent path resolution
+- No file extensions in URLs — the scheme is the protocol signal
+- Sub-resources served via `nsite-content://` custom Tauri protocol
+- nsite://titan is a real dogfooded nsite with client-side OP_RETURN generator
+- Kind 35129/15129 for the Nostr name index (published by nsit-indexer service)
+- v1 nsite fallback (kind 34128) for compatibility with existing sites
+
+## Registered Names
+
+- `titan` — txid: 322ab8800aa8d926161ff398d5d0b6c851c66679830fe05b223a548794e7002f (block 943619)
+- `westernbtc` — registered for testing
 
 ## Docs
 
 - `docs/whitepaper.md` — full protocol design and security model
-- `docs/name-protocol.md` — TNP wire format spec
+- `docs/name-protocol.md` — wire format spec + Nostr index event kinds
 - `docs/roadmap.md` — phased build plan with checkboxes
+- `docs/blog-announcement.md` — launch announcement draft
 
 ## GitHub
 

@@ -82,13 +82,14 @@ titan/
 
 - **Language**: Rust
 - **Desktop**: Tauri 2 (system webview)
-- **Database**: SQLite (bundled)
-- **Nostr**: nostr-sdk
-- **Bitcoin**: Core RPC for block scanning
+- **Name index**: Nostr events (kind 35129/15129) — no Bitcoin Core required for browsing
+- **Nostr**: nostr-sdk with race-then-linger search
+- **Bitcoin**: Core RPC for block scanning (optional, for indexer service and direct registration)
+- **Storage**: SQLite (optional local cache)
 
 ## Status
 
-Phases 1–5 complete (types, Bitcoin RPC, indexer, Nostr resolver, Tauri browser shell). See [docs/roadmap.md](docs/roadmap.md).
+Phases 1–7 complete. `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads in the Titan browser. Name lookups via Nostr relays. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Building
 
@@ -96,6 +97,15 @@ Phases 1–5 complete (types, Bitcoin RPC, indexer, Nostr resolver, Tauri browse
 # Prerequisites: Rust toolchain, system webview libraries
 cargo build
 cargo test
+
+# Run the browser (Bitcoin Core optional)
+cargo tauri dev
+
+# Run with Bitcoin Core connection (for name indexing)
+BITCOIN_RPC_URL=http://127.0.0.1:8332 \
+BITCOIN_RPC_USER=bitcoin \
+BITCOIN_RPC_PASS=yourpassword \
+cargo tauri dev
 ```
 
 ## License

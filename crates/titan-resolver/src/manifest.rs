@@ -106,6 +106,83 @@ impl Manifest {
 
         None
     }
+
+    /// Build a manifest from nsite v1 per-file events (kind 34128).
+    ///
+    /// V1 model: each file is a separate event with:
+    /// - `d` tag = file path (relative, no leading slash)
+    /// - `x` or `sha256` tag = content SHA256 hash
+    pub fn from_v1_events(events: &[Event]) -> Result<Self, ManifestError> {
+        if events.is_empty() {
+            return Err(ManifestError::Empty);
+        }
+
+        let mut files = HashMap::new();
+        let mut servers = Vec::new();
+        let mut pubkey = None;
+        let mut latest_created_at: u64 = 0;
+
+        for event in events {
+            if pubkey.is_none() {
+                pubkey = Some(event.pubkey);
+            }
+            if event.created_at.as_u64() > latest_created_at {
+                latest_created_at = event.created_at.as_u64();
+            }
+
+            let tags: Vec<Vec<&str>> = event
+                .tags
+                .iter()
+                .map(|t| t.as_slice().iter().map(|s| s.as_str()).collect())
+                .collect();
+
+            // Extract file path from d tag
+            let path = tags.iter().find_map(|t| {
+                if t.len() >= 2 && t[0] == "d" {
+                    Some(t[1])
+                } else {
+                    None
+                }
+            });
+
+            // Extract hash from x or sha256 tag
+            let hash = tags.iter().find_map(|t| {
+                if t.len() >= 2 && (t[0] == "x" || t[0] == "sha256") {
+                    Some(t[1])
+                } else {
+                    None
+                }
+            });
+
+            if let (Some(path), Some(hash)) = (path, hash) {
+                // Normalize: ensure leading slash
+                let normalized = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
+                };
+                files.insert(normalized, hash.to_string());
+            }
+
+            // Collect server hints
+            for t in &tags {
+                if t.len() >= 2 && t[0] == "server" && !servers.contains(&t[1].to_string()) {
+                    servers.push(t[1].to_string());
+                }
+            }
+        }
+
+        if files.is_empty() {
+            return Err(ManifestError::Empty);
+        }
+
+        Ok(Self {
+            pubkey: pubkey.unwrap(),
+            created_at: latest_created_at,
+            files,
+            servers,
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

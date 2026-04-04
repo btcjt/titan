@@ -155,7 +155,7 @@ Examples:
 
 ### Bitcoin name (`nsite://westernbtc`)
 
-1. **Name lookup**: Query the local Bitcoin name index for "westernbtc" → 32-byte Nostr pubkey
+1. **Name lookup**: Query Nostr relays for kind 35129 (name index event, `d=westernbtc`) → 32-byte Nostr pubkey. Falls back to local SQLite index if available.
 2. **Relay discovery**: Query fallback relays for the pubkey's kind 10002 (NIP-65 relay list) event
 3. **Manifest fetch**: Query the pubkey's relays for kind 35128 (addressable manifest) with `d=westernbtc`
 4. **Path resolution**: Match the requested path against the manifest's `path` tags to get a SHA256 blob hash
@@ -164,11 +164,22 @@ Examples:
 
 Sub-resources (CSS, JS, images) referenced by the HTML resolve through the same pipeline using the cached manifest.
 
+All Nostr queries use a race-then-linger strategy: the client subscribes to a filter across all relays, returns as soon as the first event arrives, then waits an additional 200ms for additional relays to respond. The newest event by `created_at` wins.
+
 ### Direct npub (`nsite://npub1...`)
 
 Same flow as above, but:
 - Step 1 is skipped (pubkey is decoded directly from bech32)
 - Step 3 queries kind 15128 (root manifest, one per pubkey) instead of kind 35128
+
+### Nostr Name Index
+
+The name index is published as Nostr events by an indexer service that watches Bitcoin blocks:
+
+- **Kind 35129** (addressable, `d=name`): name record with pubkey, owner address, txid, block height
+- **Kind 15129** (replaceable): index stats with block height, hash, total registered names
+
+This means clients do not need to run Bitcoin Core. They query Nostr relays for name records the same way they query for site manifests. The Nostr index is a convenience layer — any node scanning the same blockchain will arrive at the same mappings, providing independent verification.
 
 ## 5. Caching Strategy
 
@@ -176,7 +187,7 @@ Content-addressed storage enables aggressive caching:
 
 | Layer | Cache Duration | Rationale |
 |-------|---------------|-----------|
-| Name index | Always fresh | SQLite, updated per Bitcoin block |
+| Name index | Via Nostr events | Replaceable events, always fresh from relays |
 | Relay list (kind 10002) | 1 hour | Replaceable event, changes infrequently |
 | Site manifest (kind 15128/35128) | 5 minutes | Replaceable event, updated on deploy |
 | Blobs | Forever | SHA256-addressed, immutable by definition |

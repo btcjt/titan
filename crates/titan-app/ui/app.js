@@ -235,6 +235,16 @@ window.addEventListener("message", (e) => {
   }
 });
 
+// Name Manager button — loads the built-in names page
+document.getElementById("btn-names").addEventListener("click", () => {
+  hideOverlays();
+  welcome.style.display = "none";
+  pageFrame.style.display = "flex";
+  pageFrame.src = "names.html";
+  addressBar.value = "";
+  setStatus("Name Manager");
+});
+
 // Keyboard shortcut: Cmd/Ctrl+L to focus the address bar
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "l") {

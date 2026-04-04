@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
+use titan_bitcoin::rpc::{BitcoinRpc, RpcConfig};
 use titan_bitcoin::store::NameStore;
 use titan_resolver::Resolver;
 use tokio::sync::{OnceCell, RwLock};
@@ -19,6 +20,8 @@ struct AppState {
     /// Bitcoin name index (SQLite). Wrapped in std::sync::Mutex because
     /// rusqlite::Connection is !Send — only held briefly for lookups.
     name_store: std::sync::Mutex<Option<NameStore>>,
+    /// Bitcoin Core RPC config (for name registration/transfer).
+    rpc_config: Option<RpcConfig>,
     /// Current navigation context — pubkey + site name for sub-resource resolution.
     current_nav: RwLock<Option<NavContext>>,
     cache_dir: PathBuf,
@@ -69,12 +72,39 @@ async fn navigate(
     path: String,
 ) -> Result<NavigateResponse, String> {
     // Ensure resolver is initialized (fast no-op after first call)
-    state.resolver().await?;
+    let resolver = state.resolver().await?;
 
     // Parse host into pubkey + optional site name
+    // For Bitcoin names: try Nostr index first (fast, no Bitcoin Core needed),
+    // fall back to local SQLite index
     let parsed = {
         let store_lock = state.name_store.lock().unwrap();
-        parse_host(&host, store_lock.as_ref())?
+        parse_host_sync(&host, store_lock.as_ref())
+    };
+    let parsed = match parsed {
+        Ok(p) => p,
+        Err(_) => {
+            // Sync parse failed — try Nostr-based lookup for valid names
+            if let Ok(name) = titan_types::TitanName::new(&host) {
+                match resolver.lookup_name(name.as_str()).await {
+                    Ok(Some(pubkey)) => {
+                        info!("resolved '{host}' via Nostr index");
+                        ParsedHost {
+                            pubkey,
+                            site_name: Some(host.clone()),
+                        }
+                    }
+                    Ok(None) => {
+                        return Err(format!("Name '{host}' is not registered."));
+                    }
+                    Err(e) => {
+                        return Err(format!("Name lookup failed: {e}"));
+                    }
+                }
+            } else {
+                return Err(format!("Invalid nsite address: {host}"));
+            }
+        }
     };
     let path = if path.is_empty() || path == "/" {
         "/".to_string()
@@ -105,6 +135,147 @@ async fn navigate(
     Ok(NavigateResponse { content_url })
 }
 
+// ── Name Manager Commands ──
+
+#[derive(Serialize)]
+struct NameLookupResult {
+    name: String,
+    available: bool,
+    pubkey: Option<String>,
+    owner_address: Option<String>,
+    txid: Option<String>,
+    block_height: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct IndexStats {
+    connected: bool,
+    block_height: Option<u64>,
+    block_hash: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RegisterResult {
+    txid: String,
+    name: String,
+    fee_sats: u64,
+}
+
+/// Look up a name in the Bitcoin name index.
+#[tauri::command]
+async fn lookup_name(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<NameLookupResult, String> {
+    let name = titan_types::TitanName::new(&name)
+        .map_err(|e| format!("Invalid name: {e}"))?;
+
+    let store_lock = state.name_store.lock().unwrap();
+    let store = store_lock
+        .as_ref()
+        .ok_or("Name index not available")?;
+
+    match store.get_name(&name).map_err(|e| format!("{e}"))? {
+        Some(record) => Ok(NameLookupResult {
+            name: record.name.to_string(),
+            available: false,
+            pubkey: Some(hex::encode(record.pubkey)),
+            owner_address: Some(record.owner_address),
+            txid: Some(record.txid),
+            block_height: Some(record.block_height),
+        }),
+        None => Ok(NameLookupResult {
+            name: name.to_string(),
+            available: true,
+            pubkey: None,
+            owner_address: None,
+            txid: None,
+            block_height: None,
+        }),
+    }
+}
+
+/// Get the current indexer sync state.
+#[tauri::command]
+async fn get_index_stats(
+    state: State<'_, Arc<AppState>>,
+) -> Result<IndexStats, String> {
+    let store_lock = state.name_store.lock().unwrap();
+    let store = match store_lock.as_ref() {
+        Some(s) => s,
+        None => {
+            return Ok(IndexStats {
+                connected: false,
+                block_height: None,
+                block_hash: None,
+            })
+        }
+    };
+
+    let sync = store
+        .get_sync_state()
+        .map_err(|e| format!("{e}"))?;
+
+    match sync {
+        Some(s) => Ok(IndexStats {
+            connected: true,
+            block_height: Some(s.block_height),
+            block_hash: Some(s.block_hash),
+        }),
+        None => Ok(IndexStats {
+            connected: true,
+            block_height: None,
+            block_hash: None,
+        }),
+    }
+}
+
+/// Register a name on Bitcoin. Requires Bitcoin Core wallet access.
+#[tauri::command]
+async fn register_name(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    pubkey_hex: String,
+) -> Result<RegisterResult, String> {
+    let name = titan_types::TitanName::new(&name)
+        .map_err(|e| format!("Invalid name: {e}"))?;
+
+    let pubkey_bytes = hex::decode(&pubkey_hex)
+        .map_err(|e| format!("Invalid pubkey hex: {e}"))?;
+    if pubkey_bytes.len() != 32 {
+        return Err("Pubkey must be 32 bytes (64 hex chars)".to_string());
+    }
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&pubkey_bytes);
+
+    // Check if already registered
+    {
+        let store_lock = state.name_store.lock().unwrap();
+        if let Some(store) = store_lock.as_ref() {
+            if let Ok(Some(_)) = store.get_name(&name) {
+                return Err(format!("Name '{}' is already registered", name));
+            }
+        }
+    }
+
+    let rpc_config = state
+        .rpc_config
+        .as_ref()
+        .ok_or("Bitcoin Core RPC not configured. Set BITCOIN_RPC_URL, BITCOIN_RPC_USER, BITCOIN_RPC_PASS environment variables.")?;
+
+    let rpc = BitcoinRpc::new(rpc_config.clone());
+
+    let result = titan_bitcoin::tx::register_name(&rpc, &name, &pubkey)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    Ok(RegisterResult {
+        txid: result.txid,
+        name: result.name,
+        fee_sats: (result.fee_btc * 1e8) as u64,
+    })
+}
+
 /// Parse a host string into a pubkey and optional site name.
 ///
 /// The address type determines the site model:
@@ -113,7 +284,9 @@ async fn navigate(
 /// - **`<name>`** → Bitcoin name → pubkey via index, name IS the site name → kind 35128
 ///
 /// One name = one site. Register another name for another site.
-fn parse_host(host: &str, name_store: Option<&NameStore>) -> Result<ParsedHost, String> {
+/// Synchronous host parsing — handles npub, hex, base36, and local SQLite lookup.
+/// For Bitcoin names not found locally, returns Err so the caller can try Nostr.
+fn parse_host_sync(host: &str, name_store: Option<&NameStore>) -> Result<ParsedHost, String> {
     // npub1... bech32 → direct pubkey, root manifest (kind 15128)
     if host.starts_with("npub1") {
         return Ok(ParsedHost {
@@ -304,23 +477,27 @@ fn guess_content_type(path: &str) -> String {
 /// Attempts to connect to Bitcoin Core RPC. If unavailable, logs a warning
 /// and returns — the browser still works for npub-based navigation.
 /// If connected, syncs to tip then polls every 30 seconds for new blocks.
-fn start_background_indexer(db_path: String) {
+fn start_background_indexer(db_path: String, rpc_config: Option<RpcConfig>) {
     use titan_bitcoin::indexer::Indexer;
-    use titan_bitcoin::rpc::{BitcoinRpc, RpcConfig};
 
-    // Read RPC config from environment (optional — not fatal if missing)
-    let rpc_url = std::env::var("BITCOIN_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8332".to_string());
-    let rpc_user = std::env::var("BITCOIN_RPC_USER").unwrap_or_default();
-    let rpc_pass = std::env::var("BITCOIN_RPC_PASS").unwrap_or_default();
-    let rpc_wallet = std::env::var("BITCOIN_RPC_WALLET").ok();
+    let rpc_config = match rpc_config {
+        Some(c) => c,
+        None => {
+            info!("no Bitcoin RPC credentials configured — indexer disabled");
+            return;
+        }
+    };
+
+    // Block height to start scanning from on first run.
+    // NSIT registrations can't exist before the protocol was deployed.
+    // Default: block 943614 (just before the first titan registration).
+    let start_height: u64 = std::env::var("BITCOIN_START_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(943614);
 
     tauri::async_runtime::spawn(async move {
-        let rpc = BitcoinRpc::new(RpcConfig {
-            url: rpc_url,
-            user: rpc_user,
-            password: rpc_pass,
-            wallet: rpc_wallet,
-        });
+        let rpc = BitcoinRpc::new(rpc_config);
 
         // Check if Bitcoin Core is reachable
         match rpc.get_blockchain_info().await {
@@ -353,6 +530,15 @@ fn start_background_indexer(db_path: String) {
         };
 
         let mut indexer = Indexer::new(rpc, store);
+
+        // Set start height on first run (no existing sync state)
+        if indexer.store().get_sync_state().ok().flatten().is_none() {
+            info!("indexer: first run, setting start height to {start_height}");
+            if let Err(e) = indexer.set_start_height(start_height).await {
+                warn!("failed to set start height: {e}");
+                return;
+            }
+        }
 
         // Initial sync
         match indexer.sync_to_tip().await {
@@ -426,14 +612,32 @@ fn main() {
         }
     };
 
+    // Build RPC config from env (shared by indexer and name manager commands)
+    let rpc_url = std::env::var("BITCOIN_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8332".to_string());
+    let rpc_user = std::env::var("BITCOIN_RPC_USER").unwrap_or_default();
+    let rpc_pass = std::env::var("BITCOIN_RPC_PASS").unwrap_or_default();
+    let rpc_wallet = std::env::var("BITCOIN_RPC_WALLET").ok();
+
+    let rpc_config = if !rpc_user.is_empty() {
+        Some(RpcConfig {
+            url: rpc_url,
+            user: rpc_user,
+            password: rpc_pass,
+            wallet: rpc_wallet,
+        })
+    } else {
+        None
+    };
+
     // Try to start the background Bitcoin indexer
     let db_path_str = data_dir.join("names.db");
     let db_path_for_indexer = db_path_str.to_str().unwrap_or("names.db").to_string();
-    start_background_indexer(db_path_for_indexer);
+    start_background_indexer(db_path_for_indexer, rpc_config.clone());
 
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
         name_store: std::sync::Mutex::new(name_store),
+        rpc_config,
         current_nav: RwLock::new(None),
         cache_dir,
     });
@@ -529,7 +733,7 @@ fn main() {
                 }
             });
         })
-        .invoke_handler(tauri::generate_handler![navigate])
+        .invoke_handler(tauri::generate_handler![navigate, lookup_name, get_index_stats, register_name])
         .run(tauri::generate_context!())
         .expect("failed to run Titan");
 }
@@ -557,7 +761,7 @@ mod tests {
     #[test]
     fn resolve_hex_pubkey() {
         let hex = "ab".repeat(32);
-        let parsed = parse_host(&hex, None).unwrap();
+        let parsed = parse_host_sync(&hex, None).unwrap();
         assert_eq!(parsed.pubkey, [0xab; 32]);
         assert!(parsed.site_name.is_none());
     }
@@ -565,7 +769,7 @@ mod tests {
     #[test]
     fn resolve_npub() {
         let parsed =
-            parse_host("npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj", None)
+            parse_host_sync("npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj", None)
                 .unwrap();
         assert_eq!(
             hex::encode(parsed.pubkey),
@@ -576,7 +780,7 @@ mod tests {
 
     #[test]
     fn resolve_base36_with_site_name() {
-        let parsed = parse_host(
+        let parsed = parse_host_sync(
             "2zrgjemvgxppn2jwgm61w6yrqqlcmm8njvhby68a9cj7ooo5phshakespeare",
             None,
         )
@@ -591,7 +795,7 @@ mod tests {
     #[test]
     fn resolve_base36_without_site_name() {
         let parsed =
-            parse_host("2zrgjemvgxppn2jwgm61w6yrqqlcmm8njvhby68a9cj7ooo5ph", None).unwrap();
+            parse_host_sync("2zrgjemvgxppn2jwgm61w6yrqqlcmm8njvhby68a9cj7ooo5ph", None).unwrap();
         assert_eq!(
             hex::encode(parsed.pubkey),
             "781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5"
@@ -614,7 +818,7 @@ mod tests {
     #[test]
     fn resolve_name_without_store() {
         // Without a name store, valid names error gracefully
-        let err = parse_host("westernbtc", None).unwrap_err();
+        let err = parse_host_sync("westernbtc", None).unwrap_err();
         assert!(err.contains("not connected"));
     }
 
@@ -632,7 +836,7 @@ mod tests {
             )
             .unwrap();
 
-        let parsed = parse_host("westernbtc", Some(&store)).unwrap();
+        let parsed = parse_host_sync("westernbtc", Some(&store)).unwrap();
         assert_eq!(parsed.pubkey, pk);
         assert_eq!(parsed.site_name.as_deref(), Some("westernbtc"));
     }
@@ -640,7 +844,7 @@ mod tests {
     #[test]
     fn resolve_name_not_registered() {
         let store = NameStore::open_memory().unwrap();
-        let err = parse_host("doesnotexist", Some(&store)).unwrap_err();
+        let err = parse_host_sync("doesnotexist", Some(&store)).unwrap_err();
         assert!(err.contains("not registered"));
     }
 }

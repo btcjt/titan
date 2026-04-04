@@ -86,6 +86,62 @@ Total: 49 bytes (39 overhead + 10 name bytes)
 
 Same format with action byte `0x01`. The transaction's first input must be from the current owner.
 
+## Nostr Name Index
+
+An indexer service watches Bitcoin blocks for NSIT OP_RETURNs and publishes the name index as Nostr events. This allows any client to query name records without running a Bitcoin full node.
+
+### Name Record — Kind 35129 (addressable, d=name)
+
+```json
+{
+  "kind": 35129,
+  "pubkey": "<indexer-service-pubkey>",
+  "tags": [
+    ["d", "westernbtc"],
+    ["p", "<registered-nostr-pubkey-hex>"],
+    ["owner", "bc1q..."],
+    ["txid", "abc123..."],
+    ["block", "943619"],
+    ["action", "register"]
+  ],
+  "content": ""
+}
+```
+
+Addressable by d-tag = name. Transfers replace the previous record automatically.
+
+### Index Stats — Kind 15129 (replaceable)
+
+```json
+{
+  "kind": 15129,
+  "pubkey": "<indexer-service-pubkey>",
+  "tags": [
+    ["block", "943621"],
+    ["hash", "00000000..."],
+    ["names", "2"]
+  ],
+  "content": ""
+}
+```
+
+One per indexer pubkey. Updated after each block sync.
+
+### Query Pattern
+
+Clients use a race-then-linger strategy:
+1. Subscribe to the filter across all relays
+2. On first event received, start a 200ms linger timer
+3. Collect any additional events within the window
+4. Return the newest event by `created_at`
+
+Name lookup filter: `{kinds: [35129], authors: [indexerPubkey], "#d": ["name"]}`
+Stats filter: `{kinds: [15129], authors: [indexerPubkey]}`
+
+### Verification
+
+The Nostr index is a convenience layer — it is not the source of truth. Any node scanning the same blockchain will arrive at the same name→pubkey mappings. Clients that run Bitcoin Core can verify the index against their own chain. The indexer's events are signed by its Nostr keypair, providing attribution but not consensus.
+
 ## Security Considerations
 
 - **Finality**: Wait for 6 confirmations before considering a registration final

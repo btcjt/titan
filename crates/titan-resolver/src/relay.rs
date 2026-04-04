@@ -16,6 +16,16 @@ const FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// After the first event arrives, how long to wait for additional relays.
 const LINGER_DURATION: Duration = Duration::from_millis(200);
 
+/// A name record from the NSIT Nostr index (kind 35129).
+#[derive(Debug, Clone)]
+pub struct NsitNameRecord {
+    pub name: String,
+    pub pubkey_hex: String,
+    pub owner_address: String,
+    pub txid: String,
+    pub block_height: u64,
+}
+
 /// Manages a pool of Nostr relay connections.
 pub struct RelayPool {
     client: Client,
@@ -158,11 +168,14 @@ impl RelayPool {
     ///   `d` tag matching the registered name. The on-chain name IS the site
     ///   identifier — one name, one site.
     /// - **Direct npub** (`site_name = None`): kind 15128 (root, one per pubkey).
+    ///
+    /// Falls back to v1 (kind 34128, per-file events) if no v2 manifest is found.
     pub async fn fetch_manifest(
         &self,
         pubkey: &PublicKey,
         site_name: Option<&str>,
     ) -> Result<Option<Event>, RelayError> {
+        // Try v2 first
         match site_name {
             Some(name) => {
                 // Bitcoin name → kind 35128, d-tag = the registered name
@@ -187,8 +200,6 @@ impl RelayPool {
                     debug!("falling back to root manifest (kind 15128) for {pubkey}");
                     return Ok(Some(event));
                 }
-
-                Ok(None)
             }
             None => {
                 // Direct npub → kind 15128 (root manifest, one per pubkey)
@@ -201,9 +212,105 @@ impl RelayPool {
                     debug!("found root manifest (kind 15128) for {pubkey}");
                     return Ok(Some(event));
                 }
-                Ok(None)
             }
         }
+
+        // No v2 manifest found — check for v1 compatibility (kind 34128 per-file events)
+        debug!("no v2 manifest found, trying v1 (kind 34128) for {pubkey}");
+        Ok(None)
+    }
+
+    /// Fetch v1 nsite file events (kind 34128) and assemble them into a
+    /// synthetic manifest. Each v1 event has `d` tag = file path, `x` or
+    /// `sha256` tag = content hash.
+    pub async fn fetch_v1_file_events(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Vec<Event>, RelayError> {
+        let filter = Filter::new()
+            .author(*pubkey)
+            .kind(Kind::Custom(34128));
+
+        // For v1 we need all file events, not just one — use a longer linger
+        let mut stream = self
+            .client
+            .stream_events(vec![filter], Some(FIRST_RESPONSE_TIMEOUT))
+            .await
+            .map_err(|e| RelayError::Fetch(e.to_string()))?;
+
+        let mut events: Vec<Event> = Vec::new();
+
+        // Collect events for up to 3 seconds (v1 sites can have many events)
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, stream.next()).await {
+                Ok(Some(event)) => events.push(event),
+                _ => break,
+            }
+        }
+
+        debug!("fetched {} v1 file event(s) for {pubkey}", events.len());
+        Ok(events)
+    }
+
+    // ── NSIT Name Index (kind 35129 from indexer service) ──
+
+    /// Look up a name in the NSIT index published by an indexer service.
+    ///
+    /// Queries kind 35129 (addressable, d=name) signed by the indexer pubkey.
+    /// Returns the name record event if found, using race-then-linger.
+    pub async fn lookup_nsit_name(
+        &self,
+        name: &str,
+        indexer_pubkey: &PublicKey,
+    ) -> Result<Option<NsitNameRecord>, RelayError> {
+        let filter = Filter::new()
+            .author(*indexer_pubkey)
+            .kind(Kind::Custom(35129))
+            .custom_tag(SingleLetterTag::from_char('d').unwrap(), [name]);
+
+        let events = self.race_fetch(filter).await?;
+        let event = match Self::newest_event(events) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Parse tags into a name record
+        let mut pubkey_hex = String::new();
+        let mut owner_address = String::new();
+        let mut txid = String::new();
+        let mut block_height: u64 = 0;
+
+        for tag in event.tags.iter() {
+            let values: Vec<&str> = tag.as_slice().iter().map(|s| s.as_str()).collect();
+            match values.first().copied() {
+                Some("p") if values.len() >= 2 => pubkey_hex = values[1].to_string(),
+                Some("owner") if values.len() >= 2 => owner_address = values[1].to_string(),
+                Some("txid") if values.len() >= 2 => txid = values[1].to_string(),
+                Some("block") if values.len() >= 2 => {
+                    block_height = values[1].parse().unwrap_or(0);
+                }
+                _ => {}
+            }
+        }
+
+        if pubkey_hex.is_empty() {
+            return Ok(None);
+        }
+
+        debug!("found NSIT name record for '{name}' at block {block_height}");
+
+        Ok(Some(NsitNameRecord {
+            name: name.to_string(),
+            pubkey_hex,
+            owner_address,
+            txid,
+            block_height,
+        }))
     }
 
     /// Add additional relay URLs to the pool (e.g. from a pubkey's relay list).
