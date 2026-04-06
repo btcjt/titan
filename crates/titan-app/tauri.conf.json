@@ -8,16 +8,18 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Titan",
-        "url": "chrome.html",
+        "url": "about:blank",
         "width": 1200,
         "height": 800,
         "minWidth": 600,
         "minHeight": 400,
         "resizable": true,
-        "decorations": true
+        "decorations": true,
+        "transparent": true
       }
     ],
     "security": {

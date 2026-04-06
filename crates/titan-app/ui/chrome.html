@@ -21,9 +21,13 @@
         placeholder="enter a name or npub..."
       >
     </div>
+    <button id="btn-star" title="Bookmark this page (Cmd+D)">&#x2606;</button>
+    <button id="btn-bookmarks" title="Bookmarks">&#x2261;</button>
   </div>
-  <div id="status-bar">
-    <span id="status-text">Ready</span>
+  <div id="loading-bar"></div>
+  <div id="bookmarks-dropdown" style="display:none;">
+    <div id="bookmarks-list"></div>
+    <div id="bookmarks-empty">No bookmarks yet</div>
   </div>
   <script src="chrome.js"></script>
 </body>

@@ -2,7 +2,7 @@
   "identifier": "default",
   "description": "Default capabilities for Titan browser",
   "windows": ["main"],
-  "webviews": ["main", "content"],
+  "webviews": ["main", "content", "chrome"],
   "permissions": [
     "core:default",
     "core:window:default",

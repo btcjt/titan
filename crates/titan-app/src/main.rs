@@ -8,6 +8,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
@@ -15,10 +16,20 @@ use titan_resolver::Resolver;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
+/// A saved bookmark.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Bookmark {
+    url: String,
+    title: String,
+    created_at: u64,
+}
+
 /// Shared app state.
 struct AppState {
     resolver: OnceCell<Resolver>,
     cache_dir: PathBuf,
+    data_dir: PathBuf,
+    bookmarks: std::sync::Mutex<Vec<Bookmark>>,
 }
 
 impl AppState {
@@ -55,6 +66,15 @@ async fn navigate(
 
     // Parse "titan/path" or "npub1.../path" or just "titan"
     let url = url.trim().replace("nsite://", "");
+
+    // Internal pages (bookmarks, etc.)
+    if url == "internal:bookmarks" {
+        if let Some(content) = app.get_webview("content") {
+            let _ = content.navigate("nsite-content://internal/bookmarks".parse().unwrap());
+        }
+        return Ok("bookmarks".to_string());
+    }
+
     let (host, path) = match url.find('/') {
         Some(i) => (&url[..i], &url[i..]),
         None => (url.as_str(), "/"),
@@ -124,6 +144,78 @@ async fn refresh(app: tauri::AppHandle) -> Result<(), String> {
         wv.eval("location.reload()").map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+// ── Bookmarks ──
+
+fn bookmarks_path(data_dir: &PathBuf) -> PathBuf {
+    data_dir.join("bookmarks.json")
+}
+
+fn load_bookmarks(data_dir: &PathBuf) -> Vec<Bookmark> {
+    let path = bookmarks_path(data_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+        Err(_) => vec![],
+    }
+}
+
+fn save_bookmarks(data_dir: &PathBuf, bookmarks: &[Bookmark]) {
+    let path = bookmarks_path(data_dir);
+    if let Ok(json) = serde_json::to_string_pretty(bookmarks) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+#[tauri::command]
+async fn add_bookmark(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    title: String,
+) -> Result<(), String> {
+    let mut bookmarks = state.bookmarks.lock().unwrap();
+    if bookmarks.iter().any(|b| b.url == url) {
+        return Ok(()); // already bookmarked
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    bookmarks.push(Bookmark {
+        url,
+        title,
+        created_at: ts,
+    });
+    save_bookmarks(&state.data_dir, &bookmarks);
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_bookmark(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<(), String> {
+    let mut bookmarks = state.bookmarks.lock().unwrap();
+    bookmarks.retain(|b| b.url != url);
+    save_bookmarks(&state.data_dir, &bookmarks);
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_bookmarks(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Bookmark>, String> {
+    let bookmarks = state.bookmarks.lock().unwrap();
+    Ok(bookmarks.clone())
+}
+
+#[tauri::command]
+async fn is_bookmarked(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<bool, String> {
+    let bookmarks = state.bookmarks.lock().unwrap();
+    Ok(bookmarks.iter().any(|b| b.url == url))
 }
 
 // ── Host Parsing ──
@@ -363,6 +455,41 @@ p { color:#8a7f70; font-size:13px; }
 </body></html>"#.as_bytes().to_vec()
 }
 
+fn bookmarks_page(bookmarks: &[Bookmark]) -> Vec<u8> {
+    let mut items = String::new();
+    if bookmarks.is_empty() {
+        items.push_str(r#"<p style="color:#5a5348;text-align:center;padding:32px;">No bookmarks yet. Click the ☆ in the toolbar to save a site.</p>"#);
+    } else {
+        for b in bookmarks {
+            items.push_str(&format!(
+                r#"<a href="nsite://{url}" class="item">
+                    <div class="title">{title}</div>
+                    <div class="url">nsite://{url}</div>
+                </a>"#,
+                url = html_escape(&b.url),
+                title = html_escape(&b.title),
+            ));
+        }
+    }
+
+    format!(r#"<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
+body {{ margin:0; background:#0a0a0a; color:#e8e0d4; font-family:-apple-system,system-ui,sans-serif; }}
+.container {{ max-width:600px; margin:0 auto; padding:32px 24px; }}
+h1 {{ font-size:14px; font-weight:400; color:#5a5348; letter-spacing:2px; text-transform:uppercase; margin-bottom:24px; }}
+.item {{ display:block; padding:12px 16px; background:#131313; border:1px solid #221e1a; border-radius:6px;
+  margin-bottom:8px; text-decoration:none; transition:border-color 0.15s; cursor:pointer; }}
+.item:hover {{ border-color:#a06800; }}
+.title {{ font-size:15px; color:#d48f00; margin-bottom:4px; }}
+.url {{ font-size:12px; color:#5a5348; font-family:"SF Mono","Fira Code",monospace; }}
+</style></head><body>
+<div class="container">
+<h1>Bookmarks</h1>
+{items}
+</div>
+</body></html>"#, items = items).into_bytes()
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -379,13 +506,25 @@ fn main() {
 
     info!("starting Titan browser");
 
-    let cache_dir = directories::ProjectDirs::from("com", "titan", "browser")
+    let project_dirs = directories::ProjectDirs::from("com", "titan", "browser");
+    let cache_dir = project_dirs
+        .as_ref()
         .map(|d| d.cache_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".titan-cache"));
+    let data_dir = project_dirs
+        .as_ref()
+        .map(|d| d.data_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".titan-data"));
+
+    let _ = std::fs::create_dir_all(&data_dir);
+    let bookmarks = load_bookmarks(&data_dir);
+    info!("loaded {} bookmark(s)", bookmarks.len());
 
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
         cache_dir,
+        data_dir,
+        bookmarks: std::sync::Mutex::new(bookmarks),
     });
 
     let protocol_state = state.clone();
@@ -408,6 +547,10 @@ fn main() {
                     let (body, ct) = match path {
                         "/welcome" | "/" => (welcome_page(), "text/html"),
                         "/loading" => (loading_page(), "text/html"),
+                        "/bookmarks" => {
+                            let bookmarks = state.bookmarks.lock().unwrap().clone();
+                            (bookmarks_page(&bookmarks), "text/html")
+                        }
                         p if p.starts_with("/error") => {
                             let msg = uri.query()
                                 .and_then(|q| q.strip_prefix("msg="))
@@ -481,14 +624,17 @@ fn main() {
                 }
             });
         })
-        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh])
+        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, add_bookmark, remove_bookmark, list_bookmarks, is_bookmarked])
         .setup(|app| {
             let window = app.get_window("main").unwrap();
-            let window_size = window.inner_size().unwrap();
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let phys_size = window.inner_size().unwrap();
+            let logical_width = phys_size.width as f64 / scale;
+            let logical_height = phys_size.height as f64 / scale;
 
-            let chrome_height = 72.0;
+            let chrome_height = 75.0;
 
-            // Content webview — fills the space below the chrome toolbar
+            // Child 1: Content webview — full window minus toolbar, rendered BEHIND chrome
             let app_handle = app.handle().clone();
             let app_handle2 = app.handle().clone();
             let _content_webview = window.add_child(
@@ -496,16 +642,13 @@ fn main() {
                     "content",
                     tauri::WebviewUrl::External("nsite-content://internal/welcome".parse().unwrap()),
                 )
-                .auto_resize()
                 .on_navigation(move |url| {
                     let scheme = url.scheme();
 
-                    // Allow nsite-content:// (same-site nav + sub-resources)
                     if scheme == "nsite-content" {
                         return true;
                     }
 
-                    // Block and handle nsite:// links asynchronously
                     if scheme == "nsite" {
                         let url_str = url.to_string();
                         let handle = app_handle.clone();
@@ -520,7 +663,6 @@ fn main() {
                         return false;
                     }
 
-                    // Block everything else (http, https, etc.)
                     debug!("blocked navigation to {url}");
                     false
                 })
@@ -534,16 +676,46 @@ fn main() {
                 }),
                 tauri::LogicalPosition::new(0.0, chrome_height),
                 tauri::LogicalSize::new(
-                    window_size.width as f64,
-                    window_size.height as f64 - chrome_height,
+                    logical_width,
+                    logical_height - chrome_height,
                 ),
+            )?;
+
+            // Child 2: Chrome webview — full window, transparent, rendered ON TOP of content
+            // The chrome HTML has a solid toolbar at the top and transparent body below.
+            // CSS pointer-events:none on the transparent area lets clicks pass through to content.
+            // Dropdowns/popups in the chrome layer render over content naturally.
+            let _chrome_webview = window.add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "chrome",
+                    tauri::WebviewUrl::App("chrome.html".into()),
+                )
+                .transparent(true),
+                tauri::LogicalPosition::new(0.0, 0.0),
+                tauri::LogicalSize::new(logical_width, logical_height),
             )?;
 
             Ok(())
         })
-        .on_window_event(|_window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                info!("window closed");
+        .on_window_event(move |window, event| {
+            match event {
+                tauri::WindowEvent::Resized(size) => {
+                    let chrome_height = 75.0;
+                    let scale = window.scale_factor().unwrap_or(1.0);
+                    let lw = size.width as f64 / scale;
+                    let lh = size.height as f64 / scale;
+                    if let Some(content) = window.get_webview("content") {
+                        let _ = content.set_position(tauri::LogicalPosition::new(0.0, chrome_height));
+                        let _ = content.set_size(tauri::LogicalSize::new(lw, lh - chrome_height));
+                    }
+                    if let Some(chrome) = window.get_webview("chrome") {
+                        let _ = chrome.set_size(tauri::LogicalSize::new(lw, lh));
+                    }
+                }
+                tauri::WindowEvent::Destroyed => {
+                    info!("window closed");
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

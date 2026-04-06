@@ -1,0 +1,31 @@
+Nostr solved identity. Blossom solved storage. NIP-5A solved hosting. But there's been one problem left: nobody can remember a public key.
+
+npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
+
+Try to type that from memory. Try to read it to someone over the phone.
+
+That's been the bottleneck for the entire Nostr web. You can build a site, host it on Blossom, serve it through relays — but the only way to reach it is a 63-character string, or a gateway that reintroduces DNS dependency.
+
+Titan is a native desktop browser that resolves nsite:// URLs. When you type nsite://titan, the browser looks up "titan" in a name index, gets the associated Nostr pubkey, fetches the site manifest from relays, downloads the content from Blossom servers, and renders it. No DNS. No certificates. No hosting providers.
+
+The name "titan" is registered on Bitcoin using an OP_RETURN transaction. It costs about $0.10. One confirmation. Permanent.
+
+How it works:
+
+Every name registration is a single Bitcoin transaction with an OP_RETURN output containing an NSIT payload — a protocol prefix, the name, and the Nostr pubkey it points to.
+
+First-in-chain wins. The first valid registration claims the name. Duplicates are ignored. The blockchain is the arbiter.
+
+Names are controlled by a Bitcoin UTXO. Whoever can spend that output controls the name — update the pubkey or hand off ownership entirely. No intermediary needed.
+
+No renewal. No expiration. No dispute process. A registered name exists as long as Bitcoin exists.
+
+Every step from name to rendered page is cryptographically verified. Name to pubkey is secured by Bitcoin proof-of-work. Pubkey to manifest is signed by the site owner's Nostr key. Manifest to content is addressed by SHA256 hash. No certificates needed. The entire chain is trustless.
+
+The browser doesn't need Bitcoin Core. Name lookups happen through Nostr events published by an indexer service that watches the blockchain. You can register names at nsite://titan — it generates the OP_RETURN hex and you paste it into Sparrow or any wallet that supports OP_RETURN outputs.
+
+nsite:// is an open scheme. Other browsers can implement it. Other indexers can publish the same name events. Titan is the reference client, not a walled garden.
+
+One name registered for testing: titan. Everything else is unclaimed. No insider allocation, no reserved list. Fair launch.
+
+Open source: https://github.com/btcjt/titan

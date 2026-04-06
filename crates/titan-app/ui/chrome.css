@@ -1,4 +1,4 @@
-/* Titan chrome — toolbar only */
+/* Titan chrome — transparent overlay, toolbar at top */
 
 :root {
   --bg-primary: #0a0a0a;
@@ -22,13 +22,14 @@ html, body {
   height: 100%;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  background: var(--bg-secondary);
+  background: transparent;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
-  user-select: none;
-  -webkit-user-select: none;
+  /* Allow clicks to pass through to the content webview underneath */
+  pointer-events: none;
 }
 
+/* Toolbar is solid and interactive */
 #toolbar {
   display: flex;
   align-items: center;
@@ -37,6 +38,7 @@ html, body {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
+  pointer-events: auto;
 }
 
 #toolbar button,
@@ -119,11 +121,108 @@ html, body {
   font-style: italic;
 }
 
-#status-bar {
-  padding: 3px 12px;
+/* Loading bar */
+#loading-bar {
+  height: 2px;
+  background: var(--amber);
+  width: 0%;
+  transition: width 0.3s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#loading-bar.loading {
+  opacity: 1;
+  animation: loading-progress 1.5s ease-in-out infinite;
+}
+
+@keyframes loading-progress {
+  0% { width: 0%; }
+  50% { width: 70%; }
+  100% { width: 90%; }
+}
+
+#loading-bar.done {
+  width: 100%;
+  opacity: 0;
+  transition: width 0.2s ease, opacity 0.4s ease 0.2s;
+}
+
+/* Star button */
+#btn-star.bookmarked {
+  color: var(--amber);
+}
+
+/* Bookmarks dropdown — renders over content */
+#bookmarks-dropdown {
+  position: absolute;
+  top: 50px;
+  right: 12px;
+  width: 280px;
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  z-index: 100;
+  padding: 4px 0;
+  pointer-events: auto;
+}
+
+#bookmarks-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.bookmark-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  gap: 8px;
+}
+
+.bookmark-item:hover {
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+}
+
+.bookmark-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.bookmark-title {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-url {
   font-size: 11px;
   color: var(--text-muted);
-  min-height: 20px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-delete {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+
+.bookmark-delete:hover {
+  color: #c44;
 }
