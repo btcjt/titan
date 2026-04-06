@@ -1,12 +1,10 @@
-I'm giving everybody else a 30 minute head start. One name has been registered for testing: `titan`. Everything else is unclaimed. Keep reading to see what I'm talking about.
-
-Nostr solved identity. Blossom solved storage. NIP-5A solved hosting. But there's been one problem left: nobody can remember a public key.
+I'm giving everybody a 30 minute head start. One name has been registered for testing: `titan`. Everything else is unclaimed. Keep reading to see what I'm talking about.
 
 npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
 
 Try to type that from memory. Try to read it to someone over the phone.
 
-That's been the bottleneck for the entire Nostr web. You can build a site, host it on Blossom, serve it through relays — but the only way to reach it is a 63-character string, or a gateway that reintroduces DNS dependency.
+That's been the bottleneck for nsites. You can build a site, host it on Blossom, serve it through relays — but the only way to reach it is a 63-character string, or a gateway that reintroduces DNS dependency.
 
 Titan is a native desktop browser that resolves nsite:// URLs. When you type nsite://titan, the browser looks up "titan" in a name index, gets the associated Nostr pubkey, fetches the site manifest from relays, downloads the content from Blossom servers, and renders it. No DNS. No certificates. No hosting providers.
 

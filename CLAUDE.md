@@ -95,7 +95,8 @@ npub → pubkey (bech32 decode)
 
 ## Nostr Name Index (published by nsit-indexer service)
 
-- **Kind 35129** (addressable, d=name): name record — pubkey, owner address, txid, block height
+- **Kind 35129** (addressable, d=name): current name state — pubkey, owner UTXO, txid, block height
+- **Kind 1129** (regular): name history log — one event per action, never replaced, full chain of custody
 - **Kind 15129** (replaceable): index stats — block height, hash, total names
 - **Indexer pubkey**: `bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44`
 - Race-then-linger query: first relay response + 200ms linger window, newest event wins
@@ -158,7 +159,7 @@ Blossom: https://blossom.westernbtc.com
 - Browser default homepage is nsite://titan
 - Removed SQLite and Bitcoin Core from browser — pure Nostr client
 - Removed built-in name manager — all name operations happen on nsite://titan
-- Kind 35129/15129 for the Nostr name index (published by nsit-indexer service)
+- Kind 35129/1129/15129 for the Nostr name index (published by nsit-indexer service)
 - v1 nsite fallback (kind 34128) for compatibility with existing sites
 
 ## Registered Names

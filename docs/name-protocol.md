@@ -99,16 +99,42 @@ An indexer service watches Bitcoin blocks for NSIT OP_RETURNs and publishes the 
   "tags": [
     ["d", "westernbtc"],
     ["p", "<registered-nostr-pubkey-hex>"],
-    ["owner", "bc1q..."],
+    ["owner_txid", "abc123..."],
+    ["owner_vout", "0"],
     ["txid", "abc123..."],
     ["block", "943619"],
-    ["action", "register"]
+    ["action", "register"],
+    ["reg_txid", "abc123..."],
+    ["reg_block", "943619"]
   ],
   "content": ""
 }
 ```
 
-Addressable by d-tag = name. Transfers replace the previous record automatically.
+Addressable by d-tag = name. Transfers replace the previous record automatically. Includes `reg_txid`/`reg_block` (original registration, carried forward) and optionally `prev_pubkey`/`prev_txid` on transfers.
+
+### Name History — Kind 1129 (regular, non-replaceable)
+
+```json
+{
+  "kind": 1129,
+  "pubkey": "<indexer-service-pubkey>",
+  "tags": [
+    ["d", "westernbtc"],
+    ["p", "<nostr-pubkey-hex>"],
+    ["owner_txid", "def456..."],
+    ["owner_vout", "0"],
+    ["txid", "def456..."],
+    ["block", "944100"],
+    ["action", "transfer"],
+    ["prev_pubkey", "<old-nostr-pubkey-hex>"],
+    ["prev_txid", "abc123..."]
+  ],
+  "content": ""
+}
+```
+
+One event per action (register or transfer). These are never replaced — they accumulate to form the complete chain of custody. Queryable by `#d` tag to get the full history of a name.
 
 ### Index Stats — Kind 15129 (replaceable)
 
@@ -136,6 +162,7 @@ Clients use a race-then-linger strategy:
 4. Return the newest event by `created_at`
 
 Name lookup filter: `{kinds: [35129], authors: [indexerPubkey], "#d": ["name"]}`
+Name history filter: `{kinds: [1129], authors: [indexerPubkey], "#d": ["name"]}`
 Stats filter: `{kinds: [15129], authors: [indexerPubkey]}`
 
 ### Verification
