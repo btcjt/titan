@@ -12,14 +12,13 @@
     "windows": [
       {
         "title": "Titan",
-        "url": "about:blank",
+        "url": "chrome.html",
         "width": 1200,
         "height": 800,
         "minWidth": 600,
         "minHeight": 400,
         "resizable": true,
-        "decorations": true,
-        "transparent": true
+        "decorations": true
       }
     ],
     "security": {

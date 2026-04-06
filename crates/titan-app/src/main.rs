@@ -75,6 +75,16 @@ async fn navigate(
         return Ok("bookmarks".to_string());
     }
 
+    // Internal error page
+    if url.starts_with("internal:error:") {
+        let msg = &url["internal:error:".len()..];
+        if let Some(content) = app.get_webview("content") {
+            let error_url = format!("nsite-content://internal/error?msg={}", msg);
+            let _ = content.navigate(error_url.parse().unwrap());
+        }
+        return Ok("error".to_string());
+    }
+
     let (host, path) = match url.find('/') {
         Some(i) => (&url[..i], &url[i..]),
         None => (url.as_str(), "/"),
@@ -120,6 +130,28 @@ async fn navigate(
     // Return display URL for address bar
     let display = format!("{}{}", host, if path == "/" { "" } else { path });
     Ok(display)
+}
+
+/// Resize the content webview to accommodate panels.
+/// Called from chrome JS when panels open/close.
+#[tauri::command]
+async fn resize_content(
+    app: tauri::AppHandle,
+    top: f64,
+    right: f64,
+) -> Result<(), String> {
+    if let Some(window) = app.get_window("main") {
+        if let Some(content) = app.get_webview("content") {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let phys = window.inner_size().map_err(|e| e.to_string())?;
+            let lw = phys.width as f64 / scale;
+            let lh = phys.height as f64 / scale;
+
+            let _ = content.set_position(tauri::LogicalPosition::new(0.0, top));
+            let _ = content.set_size(tauri::LogicalSize::new(lw - right, lh - top));
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -494,6 +526,32 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+fn url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let hi = chars.next().unwrap_or(b'0');
+            let lo = chars.next().unwrap_or(b'0');
+            let hex = [hi, lo];
+            if let Ok(s) = std::str::from_utf8(&hex) {
+                if let Ok(val) = u8::from_str_radix(s, 16) {
+                    result.push(val as char);
+                    continue;
+                }
+            }
+            result.push('%');
+            result.push(hi as char);
+            result.push(lo as char);
+        } else if b == b'+' {
+            result.push(' ');
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 // ── Main ──
 
 fn main() {
@@ -552,10 +610,11 @@ fn main() {
                             (bookmarks_page(&bookmarks), "text/html")
                         }
                         p if p.starts_with("/error") => {
-                            let msg = uri.query()
+                            let msg_raw = uri.query()
                                 .and_then(|q| q.strip_prefix("msg="))
                                 .unwrap_or("Unknown error");
-                            (error_page(msg), "text/html")
+                            let msg = url_decode(msg_raw);
+                            (error_page(&msg), "text/html")
                         }
                         _ => (welcome_page(), "text/html"),
                     };
@@ -624,7 +683,7 @@ fn main() {
                 }
             });
         })
-        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, add_bookmark, remove_bookmark, list_bookmarks, is_bookmarked])
+        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, resize_content, add_bookmark, remove_bookmark, list_bookmarks, is_bookmarked])
         .setup(|app| {
             let window = app.get_window("main").unwrap();
             let scale = window.scale_factor().unwrap_or(1.0);
@@ -632,9 +691,12 @@ fn main() {
             let logical_width = phys_size.width as f64 / scale;
             let logical_height = phys_size.height as f64 / scale;
 
-            let chrome_height = 75.0;
+            let chrome_height = 78.0;
 
-            // Child 1: Content webview — full window minus toolbar, rendered BEHIND chrome
+            info!("window setup: phys={}x{}, scale={}, logical={}x{}, chrome_height={}",
+                phys_size.width, phys_size.height, scale, logical_width, logical_height, chrome_height);
+
+            // Content webview — single child below the chrome toolbar
             let app_handle = app.handle().clone();
             let app_handle2 = app.handle().clone();
             let _content_webview = window.add_child(
@@ -681,41 +743,11 @@ fn main() {
                 ),
             )?;
 
-            // Child 2: Chrome webview — full window, transparent, rendered ON TOP of content
-            // The chrome HTML has a solid toolbar at the top and transparent body below.
-            // CSS pointer-events:none on the transparent area lets clicks pass through to content.
-            // Dropdowns/popups in the chrome layer render over content naturally.
-            let _chrome_webview = window.add_child(
-                tauri::webview::WebviewBuilder::new(
-                    "chrome",
-                    tauri::WebviewUrl::App("chrome.html".into()),
-                )
-                .transparent(true),
-                tauri::LogicalPosition::new(0.0, 0.0),
-                tauri::LogicalSize::new(logical_width, logical_height),
-            )?;
-
             Ok(())
         })
-        .on_window_event(move |window, event| {
-            match event {
-                tauri::WindowEvent::Resized(size) => {
-                    let chrome_height = 75.0;
-                    let scale = window.scale_factor().unwrap_or(1.0);
-                    let lw = size.width as f64 / scale;
-                    let lh = size.height as f64 / scale;
-                    if let Some(content) = window.get_webview("content") {
-                        let _ = content.set_position(tauri::LogicalPosition::new(0.0, chrome_height));
-                        let _ = content.set_size(tauri::LogicalSize::new(lw, lh - chrome_height));
-                    }
-                    if let Some(chrome) = window.get_webview("chrome") {
-                        let _ = chrome.set_size(tauri::LogicalSize::new(lw, lh));
-                    }
-                }
-                tauri::WindowEvent::Destroyed => {
-                    info!("window closed");
-                }
-                _ => {}
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                info!("window closed");
             }
         })
         .run(tauri::generate_context!())

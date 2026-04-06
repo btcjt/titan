@@ -1,4 +1,4 @@
-/* Titan chrome — transparent overlay, toolbar at top */
+/* Titan chrome — toolbar + side panels */
 
 :root {
   --bg-primary: #0a0a0a;
@@ -14,31 +14,39 @@
   --border: #2a2520;
   --border-focus: #d48f0060;
   --radius: 6px;
+  --toolbar-height: 52px;
+  --panel-width: 280px;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   height: 100%;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  background: transparent;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
-  /* Allow clicks to pass through to the content webview underneath */
-  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
 }
 
-/* Toolbar is solid and interactive */
+/* ── Toolbar ── */
+
 #toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
-  pointer-events: auto;
 }
 
 #toolbar button,
@@ -87,7 +95,9 @@ html, body {
   border-radius: var(--radius);
   padding: 0 10px;
   height: 32px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 #address-bar-container:focus-within {
@@ -117,22 +127,21 @@ html, body {
 
 #address-bar::placeholder {
   color: var(--text-muted);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-style: italic;
 }
 
 /* Loading bar */
 #loading-bar {
-  height: 2px;
-  background: var(--amber);
-  width: 0%;
-  transition: width 0.3s ease;
-  opacity: 0;
-  pointer-events: none;
+  height: 1px;
+  background: var(--amber-dim);
+  width: 100%;
 }
 
 #loading-bar.loading {
-  opacity: 1;
+  background: var(--amber);
+  width: 0%;
   animation: loading-progress 1.5s ease-in-out infinite;
 }
 
@@ -143,9 +152,14 @@ html, body {
 }
 
 #loading-bar.done {
+  background: var(--amber);
   width: 100%;
-  opacity: 0;
-  transition: width 0.2s ease, opacity 0.4s ease 0.2s;
+  animation: loading-finish 0.4s ease forwards;
+}
+
+@keyframes loading-finish {
+  0% { background: var(--amber); }
+  100% { background: var(--amber-dim); }
 }
 
 /* Star button */
@@ -153,41 +167,80 @@ html, body {
   color: var(--amber);
 }
 
-/* Bookmarks dropdown — renders over content */
-#bookmarks-dropdown {
-  position: absolute;
-  top: 50px;
-  right: 12px;
-  width: 280px;
-  max-height: 360px;
-  overflow-y: auto;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-  z-index: 100;
-  padding: 4px 0;
-  pointer-events: auto;
+/* ── Side Panel ── */
+
+#side-panel {
+  position: fixed;
+  top: var(--toolbar-height);
+  right: 0;
+  width: var(--panel-width);
+  bottom: 0;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
 }
 
+#panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#panel-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+
+#panel-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.1s;
+}
+
+#panel-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+#panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+/* Bookmark items in panel */
 #bookmarks-empty {
-  padding: 16px;
+  padding: 24px 16px;
   text-align: center;
   color: var(--text-muted);
   font-size: 12px;
+  line-height: 1.5;
 }
 
 .bookmark-item {
   display: flex;
   align-items: center;
-  padding: 8px 12px;
+  padding: 8px 14px;
   cursor: pointer;
   transition: background 0.1s;
   gap: 8px;
 }
 
 .bookmark-item:hover {
-  background: var(--bg-secondary);
+  background: var(--bg-tertiary);
 }
 
 .bookmark-info {
@@ -217,10 +270,15 @@ html, body {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 14px;
-  padding: 0 4px;
+  font-size: 12px;
+  padding: 2px 4px;
   flex-shrink: 0;
   transition: color 0.1s;
+  opacity: 0;
+}
+
+.bookmark-item:hover .bookmark-delete {
+  opacity: 1;
 }
 
 .bookmark-delete:hover {

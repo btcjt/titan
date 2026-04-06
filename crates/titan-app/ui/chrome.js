@@ -1,6 +1,4 @@
-// Titan browser chrome — transparent overlay with toolbar, bookmarks dropdown
-// Communicates with Rust backend via Tauri commands and events
-
+// Titan browser chrome — toolbar + side panels
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -10,12 +8,22 @@ const btnForward = document.getElementById("btn-forward");
 const btnRefresh = document.getElementById("btn-refresh");
 const btnStar = document.getElementById("btn-star");
 const btnBookmarks = document.getElementById("btn-bookmarks");
-const bookmarksDropdown = document.getElementById("bookmarks-dropdown");
+const loadingBar = document.getElementById("loading-bar");
+const sidePanel = document.getElementById("side-panel");
+const panelClose = document.getElementById("panel-close");
 const bookmarksList = document.getElementById("bookmarks-list");
 const bookmarksEmpty = document.getElementById("bookmarks-empty");
-const loadingBar = document.getElementById("loading-bar");
 
 let currentUrl = "";
+const TOOLBAR_HEIGHT = 78;
+const PANEL_WIDTH = 280;
+
+// ── Content Webview Layout ──
+
+async function updateContentLayout() {
+  const rightOffset = sidePanel.style.display !== "none" ? PANEL_WIDTH : 0;
+  await invoke("resize_content", { top: TOOLBAR_HEIGHT, right: rightOffset });
+}
 
 // ── Navigation ──
 
@@ -23,21 +31,22 @@ async function navigate(input) {
   const cleaned = input.trim().replace(/^nsite:\/\//, "");
   if (!cleaned) return;
 
-  setStatus(`Resolving ${cleaned}...`);
   showLoading();
 
   try {
     const displayUrl = await invoke("navigate", { url: cleaned });
     addressBar.value = displayUrl;
     currentUrl = displayUrl;
-    setStatus(`Loaded ${displayUrl}`);
     btnBack.disabled = false;
     updateStarState();
     hideLoading();
   } catch (err) {
-    const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
-    setStatus(`Error: ${msg}`);
     hideLoading();
+    const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
+    // Navigate to internal error page
+    try {
+      await invoke("navigate", { url: "internal:error:" + encodeURIComponent(msg) });
+    } catch (_) {}
   }
 }
 
@@ -54,6 +63,10 @@ async function toggleBookmark() {
     await invoke("add_bookmark", { url: currentUrl, title });
   }
   updateStarState();
+  // Refresh panel if open
+  if (sidePanel.style.display !== "none") {
+    await renderBookmarks();
+  }
 }
 
 async function updateStarState() {
@@ -72,13 +85,25 @@ async function updateStarState() {
   }
 }
 
-async function toggleBookmarksDropdown() {
-  if (bookmarksDropdown.style.display === "none") {
-    await renderBookmarks();
-    bookmarksDropdown.style.display = "block";
+// ── Side Panel ──
+
+async function togglePanel() {
+  if (sidePanel.style.display !== "none") {
+    closePanel();
   } else {
-    bookmarksDropdown.style.display = "none";
+    await openBookmarksPanel();
   }
+}
+
+async function openBookmarksPanel() {
+  await renderBookmarks();
+  sidePanel.style.display = "flex";
+  await updateContentLayout();
+}
+
+async function closePanel() {
+  sidePanel.style.display = "none";
+  await updateContentLayout();
 }
 
 async function renderBookmarks() {
@@ -105,16 +130,17 @@ async function renderBookmarks() {
     `;
 
     item.addEventListener("click", () => {
-      bookmarksDropdown.style.display = "none";
       navigate(url);
     });
 
-    item.querySelector(".bookmark-delete").addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await invoke("remove_bookmark", { url });
-      await renderBookmarks();
-      updateStarState();
-    });
+    item
+      .querySelector(".bookmark-delete")
+      .addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await invoke("remove_bookmark", { url });
+        await renderBookmarks();
+        updateStarState();
+      });
 
     bookmarksList.appendChild(item);
   }
@@ -130,24 +156,13 @@ btnBack.addEventListener("click", () => invoke("go_back"));
 btnForward.addEventListener("click", () => invoke("go_forward"));
 btnRefresh.addEventListener("click", () => invoke("refresh"));
 btnStar.addEventListener("click", toggleBookmark);
-btnBookmarks.addEventListener("click", toggleBookmarksDropdown);
+btnBookmarks.addEventListener("click", togglePanel);
+panelClose.addEventListener("click", closePanel);
 
-// Close dropdown when clicking outside
-document.addEventListener("click", (e) => {
-  if (bookmarksDropdown.style.display !== "none" &&
-      !bookmarksDropdown.contains(e.target) &&
-      e.target !== btnBookmarks) {
-    bookmarksDropdown.style.display = "none";
-  }
-});
-
-// Listen for URL updates from content webview
 listen("page-loaded", (event) => {
-  const url = event.payload;
-  if (url) {
-    addressBar.value = url;
-    currentUrl = url;
-    setStatus(`Loaded ${url}`);
+  if (event.payload) {
+    addressBar.value = event.payload;
+    currentUrl = event.payload;
     updateStarState();
     hideLoading();
   }
@@ -155,10 +170,6 @@ listen("page-loaded", (event) => {
 
 listen("nsite-link-clicked", (event) => {
   if (event.payload) navigate(event.payload);
-});
-
-listen("status", (event) => {
-  if (event.payload) setStatus(event.payload);
 });
 
 // Keyboard shortcuts
@@ -172,11 +183,10 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     toggleBookmark();
   }
+  if (e.key === "Escape" && sidePanel.style.display !== "none") {
+    closePanel();
+  }
 });
-
-function setStatus(text) {
-  // Status shown via loading bar animation; text available for debugging
-}
 
 function showLoading() {
   loadingBar.className = "loading";
@@ -184,12 +194,17 @@ function showLoading() {
 
 function hideLoading() {
   loadingBar.className = "done";
-  setTimeout(() => { loadingBar.className = ""; }, 600);
+  setTimeout(() => {
+    loadingBar.className = "";
+  }, 600);
 }
 
 function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Navigate to nsite://titan on load
-navigate("titan");
+// Keep content webview sized correctly on window resize
+window.addEventListener("resize", () => updateContentLayout());
+
+// Set initial content layout, then navigate to homepage
+updateContentLayout().then(() => navigate("titan"));
