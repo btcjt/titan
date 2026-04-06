@@ -1,4 +1,4 @@
-// Titan browser chrome — toolbar + side panels
+// Titan browser chrome — toolbar, panels (bookmarks, dev console)
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -10,18 +10,23 @@ const btnStar = document.getElementById("btn-star");
 const btnBookmarks = document.getElementById("btn-bookmarks");
 const loadingBar = document.getElementById("loading-bar");
 const sidePanel = document.getElementById("side-panel");
-const panelClose = document.getElementById("panel-close");
+const panelTitle = document.getElementById("panel-title");
+const panelBookmarks = document.getElementById("panel-bookmarks");
+const panelConsole = document.getElementById("panel-console");
 const bookmarksList = document.getElementById("bookmarks-list");
 const bookmarksEmpty = document.getElementById("bookmarks-empty");
+const consoleLog = document.getElementById("console-log");
 
 let currentUrl = "";
+let suppressNextPageLoad = false;
 const TOOLBAR_HEIGHT = 78;
 const PANEL_WIDTH = 280;
+let activePanel = null; // "bookmarks" | "console" | null
 
 // ── Content Webview Layout ──
 
 async function updateContentLayout() {
-  const rightOffset = sidePanel.style.display !== "none" ? PANEL_WIDTH : 0;
+  const rightOffset = activePanel ? PANEL_WIDTH : 0;
   await invoke("resize_content", { top: TOOLBAR_HEIGHT, right: rightOffset });
 }
 
@@ -32,18 +37,21 @@ async function navigate(input) {
   if (!cleaned) return;
 
   showLoading();
+  log("info", `navigating to ${cleaned}`);
 
   try {
     const displayUrl = await invoke("navigate", { url: cleaned });
     addressBar.value = displayUrl;
     currentUrl = displayUrl;
+    suppressNextPageLoad = true;
     btnBack.disabled = false;
     updateStarState();
     hideLoading();
+    log("info", `loaded ${displayUrl}`);
   } catch (err) {
     hideLoading();
     const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
-    // Navigate to internal error page
+    log("error", msg);
     try {
       await invoke("navigate", { url: "internal:error:" + encodeURIComponent(msg) });
     } catch (_) {}
@@ -58,15 +66,14 @@ async function toggleBookmark() {
   const bookmarked = await invoke("is_bookmarked", { url: currentUrl });
   if (bookmarked) {
     await invoke("remove_bookmark", { url: currentUrl });
+    log("info", `removed bookmark: ${currentUrl}`);
   } else {
     const title = currentUrl.split("/")[0] || currentUrl;
     await invoke("add_bookmark", { url: currentUrl, title });
+    log("info", `bookmarked: ${currentUrl}`);
   }
   updateStarState();
-  // Refresh panel if open
-  if (sidePanel.style.display !== "none") {
-    await renderBookmarks();
-  }
+  if (activePanel === "bookmarks") await renderBookmarks();
 }
 
 async function updateStarState() {
@@ -83,27 +90,6 @@ async function updateStarState() {
     btnStar.innerHTML = "&#x2606;";
     btnStar.classList.remove("bookmarked");
   }
-}
-
-// ── Side Panel ──
-
-async function togglePanel() {
-  if (sidePanel.style.display !== "none") {
-    closePanel();
-  } else {
-    await openBookmarksPanel();
-  }
-}
-
-async function openBookmarksPanel() {
-  await renderBookmarks();
-  sidePanel.style.display = "flex";
-  await updateContentLayout();
-}
-
-async function closePanel() {
-  sidePanel.style.display = "none";
-  await updateContentLayout();
 }
 
 async function renderBookmarks() {
@@ -123,27 +109,90 @@ async function renderBookmarks() {
     item.className = "bookmark-item";
     item.innerHTML = `
       <div class="bookmark-info">
-        <div class="bookmark-title">${escapeHtml(b.title)}</div>
+        <input class="bookmark-title-input" type="text" value="${escapeAttr(b.title)}" spellcheck="false">
         <div class="bookmark-url">nsite://${escapeHtml(b.url)}</div>
       </div>
       <button class="bookmark-delete" title="Remove">&#x2715;</button>
     `;
 
-    item.addEventListener("click", () => {
-      navigate(url);
-    });
+    // Click the URL to navigate
+    item.querySelector(".bookmark-url").addEventListener("click", () => navigate(url));
 
-    item
-      .querySelector(".bookmark-delete")
-      .addEventListener("click", async (e) => {
-        e.stopPropagation();
-        await invoke("remove_bookmark", { url });
-        await renderBookmarks();
-        updateStarState();
-      });
+    // Title input — rename on change
+    const titleInput = item.querySelector(".bookmark-title-input");
+    titleInput.addEventListener("blur", async () => {
+      const newTitle = titleInput.value.trim() || url;
+      if (newTitle !== b.title) {
+        await invoke("rename_bookmark", { url, title: newTitle });
+      }
+    });
+    titleInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); titleInput.blur(); }
+      e.stopPropagation(); // prevent keyboard shortcuts while typing
+    });
+    titleInput.addEventListener("click", (e) => e.stopPropagation());
+
+    // Delete button
+    item.querySelector(".bookmark-delete").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await invoke("remove_bookmark", { url });
+      await renderBookmarks();
+      updateStarState();
+    });
 
     bookmarksList.appendChild(item);
   }
+}
+
+// ── Generic Panel System ──
+
+async function openPanel(name) {
+  if (activePanel === name) {
+    closePanel();
+    return;
+  }
+
+  // Hide all panel views
+  panelBookmarks.style.display = "none";
+  panelConsole.style.display = "none";
+
+  // Show the requested one
+  if (name === "bookmarks") {
+    panelTitle.textContent = "Bookmarks";
+    panelBookmarks.style.display = "block";
+    await renderBookmarks();
+  } else if (name === "console") {
+    panelTitle.textContent = "Console";
+    panelConsole.style.display = "block";
+  }
+
+  activePanel = name;
+  sidePanel.style.display = "flex";
+  document.body.classList.add("panel-open");
+  await updateContentLayout();
+}
+
+async function closePanel() {
+  activePanel = null;
+  sidePanel.style.display = "none";
+  document.body.classList.remove("panel-open");
+  await updateContentLayout();
+}
+
+// ── Dev Console ──
+
+function log(level, msg) {
+  const entry = document.createElement("div");
+  entry.className = `console-entry ${level}`;
+
+  const time = document.createElement("span");
+  time.className = "console-time";
+  time.textContent = new Date().toLocaleTimeString();
+
+  entry.appendChild(time);
+  entry.appendChild(document.createTextNode(msg));
+  consoleLog.appendChild(entry);
+  consoleLog.scrollTop = consoleLog.scrollHeight;
 }
 
 // ── Event Listeners ──
@@ -156,34 +205,67 @@ btnBack.addEventListener("click", () => invoke("go_back"));
 btnForward.addEventListener("click", () => invoke("go_forward"));
 btnRefresh.addEventListener("click", () => invoke("refresh"));
 btnStar.addEventListener("click", toggleBookmark);
-btnBookmarks.addEventListener("click", togglePanel);
-panelClose.addEventListener("click", closePanel);
+btnBookmarks.addEventListener("click", () => openPanel("bookmarks"));
+document.getElementById("btn-console").addEventListener("click", () => openPanel("console"));
 
 listen("page-loaded", (event) => {
   if (event.payload) {
-    addressBar.value = event.payload;
-    currentUrl = event.payload;
-    updateStarState();
+    if (suppressNextPageLoad) {
+      // navigate command already set the address bar
+      suppressNextPageLoad = false;
+    } else {
+      // Back/forward/link click — update address bar from content URL
+      addressBar.value = event.payload;
+      currentUrl = event.payload;
+      updateStarState();
+    }
     hideLoading();
+    log("info", `page loaded: ${event.payload}`);
   }
 });
 
+// Events from content webview keyboard shortcuts
+listen("open-panel", (event) => {
+  if (event.payload) openPanel(event.payload);
+});
+
+listen("focus-address-bar", () => {
+  addressBar.focus();
+  addressBar.select();
+});
+
+listen("toggle-bookmark", () => {
+  toggleBookmark();
+});
+
 listen("nsite-link-clicked", (event) => {
-  if (event.payload) navigate(event.payload);
+  if (event.payload) {
+    log("info", `nsite link: ${event.payload}`);
+    navigate(event.payload);
+  }
 });
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
+  // Cmd+L — focus address bar
   if ((e.metaKey || e.ctrlKey) && e.key === "l") {
     e.preventDefault();
     addressBar.focus();
     addressBar.select();
   }
+  // Cmd+D — toggle bookmark
   if ((e.metaKey || e.ctrlKey) && e.key === "d") {
     e.preventDefault();
     toggleBookmark();
   }
-  if (e.key === "Escape" && sidePanel.style.display !== "none") {
+  // Cmd+Option+K — dev console (Mac) / Ctrl+Shift+K (other)
+  if ((e.metaKey && e.altKey && e.code === "KeyK") ||
+      (e.ctrlKey && e.shiftKey && e.code === "KeyK")) {
+    e.preventDefault();
+    openPanel("console");
+  }
+  // Escape — close panel
+  if (e.key === "Escape" && activePanel) {
     closePanel();
   }
 });
@@ -194,17 +276,20 @@ function showLoading() {
 
 function hideLoading() {
   loadingBar.className = "done";
-  setTimeout(() => {
-    loadingBar.className = "";
-  }, 600);
+  setTimeout(() => { loadingBar.className = ""; }, 500);
 }
 
 function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function escapeAttr(s) {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
 // Keep content webview sized correctly on window resize
 window.addEventListener("resize", () => updateContentLayout());
 
-// Set initial content layout, then navigate to homepage
+// Default homepage
+log("info", "Titan started");
 updateContentLayout().then(() => navigate("titan"));

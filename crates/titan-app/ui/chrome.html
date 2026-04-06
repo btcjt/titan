@@ -23,18 +23,25 @@
     </div>
     <button id="btn-star" title="Bookmark (Cmd+D)">&#x2606;</button>
     <button id="btn-bookmarks" title="Bookmarks">&#x2261;</button>
+    <button id="btn-console" title="Console (Cmd+Opt+K)" style="font-size:12px;display:none;">&#x2699;</button>
   </div>
   <div id="loading-bar"></div>
 
-  <!-- Side panel — shown to the right of the content webview -->
+  <!-- Side panel -->
   <div id="side-panel" style="display:none;">
     <div id="panel-header">
-      <span id="panel-title">Bookmarks</span>
-      <button id="panel-close">&#x2715;</button>
+      <span id="panel-title"></span>
     </div>
     <div id="panel-content">
-      <div id="bookmarks-list"></div>
-      <div id="bookmarks-empty">No bookmarks yet. Click ☆ to save a site.</div>
+      <!-- Bookmarks view -->
+      <div id="panel-bookmarks" style="display:none;">
+        <div id="bookmarks-list"></div>
+        <div id="bookmarks-empty">No bookmarks yet. Click ☆ to save a site.</div>
+      </div>
+      <!-- Dev console view -->
+      <div id="panel-console" style="display:none;">
+        <div id="console-log"></div>
+      </div>
     </div>
   </div>
 

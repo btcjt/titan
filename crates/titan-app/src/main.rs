@@ -155,6 +155,24 @@ async fn resize_content(
 }
 
 #[tauri::command]
+async fn open_console(app: tauri::AppHandle) -> Result<(), String> {
+    let _ = app.emit("open-panel", "console");
+    Ok(())
+}
+
+#[tauri::command]
+async fn focus_address_bar(app: tauri::AppHandle) -> Result<(), String> {
+    let _ = app.emit("focus-address-bar", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_bookmark_cmd(app: tauri::AppHandle) -> Result<(), String> {
+    let _ = app.emit("toggle-bookmark", ());
+    Ok(())
+}
+
+#[tauri::command]
 async fn go_back(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(wv) = app.get_webview("content") {
         wv.eval("history.back()").map_err(|e| e.to_string())?;
@@ -229,6 +247,20 @@ async fn remove_bookmark(
 ) -> Result<(), String> {
     let mut bookmarks = state.bookmarks.lock().unwrap();
     bookmarks.retain(|b| b.url != url);
+    save_bookmarks(&state.data_dir, &bookmarks);
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_bookmark(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    title: String,
+) -> Result<(), String> {
+    let mut bookmarks = state.bookmarks.lock().unwrap();
+    if let Some(b) = bookmarks.iter_mut().find(|b| b.url == url) {
+        b.title = title;
+    }
     save_bookmarks(&state.data_dir, &bookmarks);
     Ok(())
 }
@@ -387,7 +419,7 @@ fn content_url_to_display(url: &tauri::Url) -> Option<String> {
 
     let path = url.path();
 
-    // Extract display name from {hex}.{name} format
+    // {hex}.{name} format — show the name portion as the display URL
     if host.len() > 64 && host.as_bytes().get(64) == Some(&b'.') {
         let name = &host[65..];
         let display_path = if path == "/" { "" } else { path };
@@ -683,7 +715,7 @@ fn main() {
                 }
             });
         })
-        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, resize_content, add_bookmark, remove_bookmark, list_bookmarks, is_bookmarked])
+        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, resize_content, open_console, focus_address_bar, toggle_bookmark_cmd, add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked])
         .setup(|app| {
             let window = app.get_window("main").unwrap();
             let scale = window.scale_factor().unwrap_or(1.0);
@@ -711,6 +743,19 @@ fn main() {
                         return true;
                     }
 
+                    // Internal commands from injected keyboard shortcuts
+                    if scheme == "titan-cmd" {
+                        let cmd = url.host_str().unwrap_or("");
+                        let handle = app_handle.clone();
+                        match cmd {
+                            "console" => { let _ = handle.emit("open-panel", "console"); }
+                            "focus-address-bar" => { let _ = handle.emit("focus-address-bar", ()); }
+                            "toggle-bookmark" => { let _ = handle.emit("toggle-bookmark", ()); }
+                            _ => {}
+                        }
+                        return false;
+                    }
+
                     if scheme == "nsite" {
                         let url_str = url.to_string();
                         let handle = app_handle.clone();
@@ -728,12 +773,29 @@ fn main() {
                     debug!("blocked navigation to {url}");
                     false
                 })
-                .on_page_load(move |_webview, payload| {
+                .on_page_load(move |webview, payload| {
                     if let tauri::webview::PageLoadEvent::Finished = payload.event() {
                         let url = payload.url();
                         if let Some(display) = content_url_to_display(url) {
                             let _ = app_handle2.emit("page-loaded", &display);
                         }
+                        // Inject keyboard shortcut listener into content pages.
+                        // Uses titan-cmd:// scheme which on_navigation intercepts.
+                        let _ = webview.eval(r#"
+                            document.addEventListener('keydown', function(e) {
+                                var cmd = null;
+                                if ((e.metaKey && e.altKey && e.code === 'KeyK') ||
+                                    (e.ctrlKey && e.shiftKey && e.code === 'KeyK')) cmd = 'console';
+                                if ((e.metaKey || e.ctrlKey) && e.code === 'KeyL') cmd = 'focus-address-bar';
+                                if ((e.metaKey || e.ctrlKey) && e.code === 'KeyD') cmd = 'toggle-bookmark';
+                                if (cmd) {
+                                    e.preventDefault();
+                                    var a = document.createElement('a');
+                                    a.href = 'titan-cmd://' + cmd;
+                                    a.click();
+                                }
+                            });
+                        "#);
                     }
                 }),
                 tauri::LogicalPosition::new(0.0, chrome_height),

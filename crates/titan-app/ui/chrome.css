@@ -162,6 +162,15 @@ body {
   100% { background: var(--amber-dim); }
 }
 
+/* Panel-open state — shrink toolbar to make room */
+body.panel-open #toolbar {
+  margin-right: var(--panel-width);
+}
+
+body.panel-open #loading-bar {
+  margin-right: var(--panel-width);
+}
+
 /* Star button */
 #btn-star.bookmarked {
   color: var(--amber);
@@ -171,7 +180,7 @@ body {
 
 #side-panel {
   position: fixed;
-  top: var(--toolbar-height);
+  top: 0;
   right: 0;
   width: var(--panel-width);
   bottom: 0;
@@ -197,22 +206,6 @@ body {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1.5px;
-}
-
-#panel-close {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  transition: all 0.1s;
-}
-
-#panel-close:hover {
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
 }
 
 #panel-content {
@@ -248,12 +241,26 @@ body {
   overflow: hidden;
 }
 
-.bookmark-title {
-  font-size: 13px;
+.bookmark-title-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
   color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 1px 4px;
+  outline: none;
+  margin: -1px -4px;
+}
+
+.bookmark-title-input:hover {
+  border-color: var(--border);
+}
+
+.bookmark-title-input:focus {
+  background: var(--bg-input);
+  border-color: var(--border-focus);
 }
 
 .bookmark-url {
@@ -263,6 +270,11 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.bookmark-url:hover {
+  color: var(--amber);
 }
 
 .bookmark-delete {
@@ -283,4 +295,29 @@ body {
 
 .bookmark-delete:hover {
   color: #c44;
+}
+
+/* ── Dev Console ── */
+
+#console-log {
+  padding: 8px;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.console-entry {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  word-break: break-all;
+}
+
+.console-entry.info { color: var(--text-secondary); }
+.console-entry.warn { color: #cb6; }
+.console-entry.error { color: #c66; }
+.console-entry.debug { color: var(--text-muted); }
+
+.console-time {
+  color: var(--text-muted);
+  margin-right: 6px;
 }
