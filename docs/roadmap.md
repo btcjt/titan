@@ -69,10 +69,13 @@
 - [x] Name details + history: /name?q= page with UTXO, mempool.space link, timeline
 
 ## Phase 8: Distribution
-- [ ] macOS .dmg
-- [ ] Linux .AppImage
-- [ ] Windows .msi
-- [ ] GitHub Actions CI (build + test + release)
+- [x] GitHub Actions CI — tests on every push/PR
+- [x] GitHub Actions Release — builds on tag push, creates GitHub release with artifacts
+- [x] macOS .dmg (aarch64 + x86_64)
+- [x] Linux .AppImage + .deb
+- [x] Windows .msi + .exe (NSIS)
+- [x] Tauri bundle config (macOS min version, Linux deps, Windows install mode)
+- [x] zapstore.dev publish script (kind 32267 app listing via nak)
 
 ## Future
 - Loading diagnostics: show why a site is slow (no kind 10002 relay list, no kind 10063 Blossom list, missing server tags in manifest, relay timeouts)

@@ -1,3 +1,5 @@
+I'm giving everybody else a 30 minute head start. One name has been registered for testing: `titan`. Everything else is unclaimed. Keep reading to see what I'm talking about.
+
 Nostr solved identity. Blossom solved storage. NIP-5A solved hosting. But there's been one problem left: nobody can remember a public key.
 
 npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
