@@ -37,12 +37,37 @@ pub const FALLBACK_RELAYS: &[&str] = &[
 /// Fallback Blossom servers for blob fetching.
 pub const FALLBACK_BLOSSOM_SERVERS: &[&str] = &[
     "https://blossom.westernbtc.com",
-    "https://nostr.build",
 ];
 
 /// Default NSIT indexer pubkey (signs kind 35129/15129 events).
 pub const INDEXER_PUBKEY_HEX: &str =
     "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44";
+
+/// Default discovery relays.
+pub const DEFAULT_DISCOVERY_RELAYS: &[&str] = &[
+    "wss://purplepag.es",
+    "wss://user.kindpag.es",
+];
+
+/// Configuration for the resolver.
+#[derive(Debug, Clone)]
+pub struct ResolverConfig {
+    pub relays: Vec<String>,
+    pub discovery_relays: Vec<String>,
+    pub blossom_servers: Vec<String>,
+    pub indexer_pubkey: String,
+}
+
+impl Default for ResolverConfig {
+    fn default() -> Self {
+        Self {
+            relays: FALLBACK_RELAYS.iter().map(|s| s.to_string()).collect(),
+            discovery_relays: DEFAULT_DISCOVERY_RELAYS.iter().map(|s| s.to_string()).collect(),
+            blossom_servers: FALLBACK_BLOSSOM_SERVERS.iter().map(|s| s.to_string()).collect(),
+            indexer_pubkey: INDEXER_PUBKEY_HEX.to_string(),
+        }
+    }
+}
 
 /// Resolved content ready for rendering.
 pub struct ResolvedContent {
@@ -59,6 +84,7 @@ pub struct Resolver {
     relays: RelayPool,
     blossom: BlossomClient,
     cache: DiskCache,
+    config: ResolverConfig,
 }
 
 /// Errors from the resolution flow.
@@ -79,15 +105,23 @@ pub enum ResolverError {
 }
 
 impl Resolver {
-    /// Create a new resolver, connecting to fallback relays and setting up the cache.
+    /// Create a new resolver with default config.
     pub async fn new(cache_dir: PathBuf) -> Result<Self, ResolverError> {
-        let relays = RelayPool::connect(FALLBACK_RELAYS).await?;
+        Self::new_with_config(cache_dir, ResolverConfig::default()).await
+    }
+
+    /// Create a new resolver with custom config.
+    pub async fn new_with_config(cache_dir: PathBuf, config: ResolverConfig) -> Result<Self, ResolverError> {
+        let relay_strs: Vec<&str> = config.relays.iter().map(|s| s.as_str()).collect();
+        let discovery_strs: Vec<&str> = config.discovery_relays.iter().map(|s| s.as_str()).collect();
+        let relays = RelayPool::connect_with_discovery(&relay_strs, &discovery_strs).await?;
         let blossom = BlossomClient::new();
         let cache = DiskCache::new(cache_dir)?;
         Ok(Self {
             relays,
             blossom,
             cache,
+            config,
         })
     }
 
@@ -95,7 +129,7 @@ impl Resolver {
     /// Uses race-then-linger for fast results from the first relay that responds.
     /// Returns the 32-byte pubkey if the name is found, or None.
     pub async fn lookup_name(&self, name: &str) -> Result<Option<[u8; 32]>, ResolverError> {
-        let indexer_pubkey = PublicKey::from_hex(INDEXER_PUBKEY_HEX)
+        let indexer_pubkey = PublicKey::from_hex(&self.config.indexer_pubkey)
             .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
 
         let record = self.relays.lookup_nsit_name(name, &indexer_pubkey).await?;
@@ -264,11 +298,10 @@ impl Resolver {
         // Build server list: manifest servers → fallbacks → blossom list (if needed)
         let mut servers: Vec<String> = manifest.servers.clone();
 
-        // Add fallbacks immediately — don't wait for a Nostr query
-        for s in FALLBACK_BLOSSOM_SERVERS {
-            let s = s.to_string();
-            if !servers.contains(&s) {
-                servers.push(s);
+        // Add configured blossom servers
+        for s in &self.config.blossom_servers {
+            if !servers.contains(s) {
+                servers.push(s.clone());
             }
         }
 

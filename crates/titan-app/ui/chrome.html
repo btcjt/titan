@@ -23,6 +23,7 @@
     </div>
     <button id="btn-star" title="Bookmark (Cmd+D)">&#x2606;</button>
     <button id="btn-bookmarks" title="Bookmarks">&#x2261;</button>
+    <button id="btn-settings" title="Settings" style="font-size:13px;">&#x2699;</button>
     <button id="btn-console" title="Console (Cmd+Opt+K)" style="font-size:12px;display:none;">&#x2699;</button>
   </div>
   <div id="loading-bar"></div>
@@ -41,6 +42,38 @@
       <!-- Dev console view -->
       <div id="panel-console" style="display:none;">
         <div id="console-log"></div>
+      </div>
+      <!-- Settings view -->
+      <div id="panel-settings" style="display:none;">
+        <div class="settings-section">
+          <label class="settings-label">Relays</label>
+          <textarea id="settings-relays" class="settings-textarea" rows="3" spellcheck="false" placeholder="wss://relay.example.com"></textarea>
+          <div class="settings-hint">Nostr relays for content resolution (one per line)</div>
+        </div>
+        <div class="settings-section">
+          <label class="settings-label">Discovery Relays</label>
+          <textarea id="settings-discovery" class="settings-textarea" rows="2" spellcheck="false" placeholder="wss://purplepag.es"></textarea>
+          <div class="settings-hint">NIP-65 relays for relay list lookups (one per line)</div>
+        </div>
+        <div class="settings-section">
+          <label class="settings-label">Blossom Servers</label>
+          <textarea id="settings-blossom" class="settings-textarea" rows="2" spellcheck="false" placeholder="https://blossom.example.com"></textarea>
+          <div class="settings-hint">Content-addressed blob storage (one per line)</div>
+        </div>
+        <div class="settings-section">
+          <label class="settings-label">Indexer Pubkey</label>
+          <input id="settings-indexer" class="settings-input" type="text" spellcheck="false" placeholder="hex pubkey">
+          <div class="settings-hint">NSIT name index publisher (hex)</div>
+        </div>
+        <div class="settings-section">
+          <label class="settings-label">Homepage</label>
+          <input id="settings-homepage" class="settings-input" type="text" spellcheck="false" placeholder="titan">
+          <div class="settings-hint">Default page on startup</div>
+        </div>
+        <div class="settings-section">
+          <button id="settings-save" class="settings-btn">Save</button>
+          <button id="settings-reset" class="settings-btn-secondary">Reset to Defaults</button>
+        </div>
       </div>
     </div>
   </div>

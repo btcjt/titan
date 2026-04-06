@@ -42,8 +42,13 @@ pub struct RelayPool {
 }
 
 impl RelayPool {
-    /// Create a new relay pool and connect to the given relay URLs.
+    /// Create a new relay pool with default discovery relays.
     pub async fn connect(relay_urls: &[&str]) -> Result<Self, RelayError> {
+        Self::connect_with_discovery(relay_urls, DISCOVERY_RELAYS).await
+    }
+
+    /// Create a new relay pool with custom discovery relays.
+    pub async fn connect_with_discovery(relay_urls: &[&str], discovery_urls: &[&str]) -> Result<Self, RelayError> {
         let client = Client::default();
 
         for url in relay_urls {
@@ -52,8 +57,7 @@ impl RelayPool {
             }
         }
 
-        // Add NIP-65 discovery relays for relay list lookups
-        for url in DISCOVERY_RELAYS {
+        for url in discovery_urls {
             if let Err(e) = client.add_relay(*url).await {
                 debug!("failed to add discovery relay {url}: {e}");
             }

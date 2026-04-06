@@ -16,6 +16,7 @@ const panelConsole = document.getElementById("panel-console");
 const bookmarksList = document.getElementById("bookmarks-list");
 const bookmarksEmpty = document.getElementById("bookmarks-empty");
 const consoleLog = document.getElementById("console-log");
+const panelSettings = document.getElementById("panel-settings");
 
 let currentUrl = "";
 let suppressNextPageLoad = false;
@@ -155,6 +156,7 @@ async function openPanel(name) {
   // Hide all panel views
   panelBookmarks.style.display = "none";
   panelConsole.style.display = "none";
+  panelSettings.style.display = "none";
 
   // Show the requested one
   if (name === "bookmarks") {
@@ -164,6 +166,10 @@ async function openPanel(name) {
   } else if (name === "console") {
     panelTitle.textContent = "Console";
     panelConsole.style.display = "block";
+  } else if (name === "settings") {
+    panelTitle.textContent = "Settings";
+    panelSettings.style.display = "block";
+    await loadSettingsUI();
   }
 
   activePanel = name;
@@ -195,6 +201,49 @@ function log(level, msg) {
   consoleLog.scrollTop = consoleLog.scrollHeight;
 }
 
+// ── Settings ──
+
+async function loadSettingsUI() {
+  const s = await invoke("get_settings");
+  document.getElementById("settings-relays").value = s.relays.join("\n");
+  document.getElementById("settings-discovery").value = s.discovery_relays.join("\n");
+  document.getElementById("settings-blossom").value = s.blossom_servers.join("\n");
+  document.getElementById("settings-indexer").value = s.indexer_pubkey;
+  document.getElementById("settings-homepage").value = s.homepage;
+}
+
+async function saveSettings() {
+  const settings = {
+    relays: lines("settings-relays"),
+    discovery_relays: lines("settings-discovery"),
+    blossom_servers: lines("settings-blossom"),
+    indexer_pubkey: document.getElementById("settings-indexer").value.trim(),
+    homepage: document.getElementById("settings-homepage").value.trim() || "titan",
+  };
+  await invoke("update_settings", { settings });
+  log("info", "settings saved (restart to apply relay changes)");
+}
+
+async function resetSettings() {
+  const defaults = {
+    relays: ["wss://relay.westernbtc.com", "wss://relay.primal.net", "wss://relay.damus.io"],
+    discovery_relays: ["wss://purplepag.es", "wss://user.kindpag.es"],
+    blossom_servers: ["https://blossom.westernbtc.com"],
+    indexer_pubkey: "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44",
+    homepage: "titan",
+  };
+  await invoke("update_settings", { settings: defaults });
+  await loadSettingsUI();
+  log("info", "settings reset to defaults");
+}
+
+function lines(id) {
+  return document.getElementById(id).value
+    .split("\n")
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+}
+
 // ── Event Listeners ──
 
 addressBar.addEventListener("keydown", (e) => {
@@ -206,7 +255,10 @@ btnForward.addEventListener("click", () => invoke("go_forward"));
 btnRefresh.addEventListener("click", () => invoke("refresh"));
 btnStar.addEventListener("click", toggleBookmark);
 btnBookmarks.addEventListener("click", () => openPanel("bookmarks"));
+document.getElementById("btn-settings").addEventListener("click", () => openPanel("settings"));
 document.getElementById("btn-console").addEventListener("click", () => openPanel("console"));
+document.getElementById("settings-save").addEventListener("click", saveSettings);
+document.getElementById("settings-reset").addEventListener("click", resetSettings);
 
 listen("page-loaded", (event) => {
   if (event.payload) {
@@ -245,8 +297,10 @@ listen("nsite-link-clicked", (event) => {
   }
 });
 
-// Keyboard shortcuts
+// Keyboard shortcuts (skip when typing in settings/inputs)
 document.addEventListener("keydown", (e) => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "textarea") return;
   // Cmd+L — focus address bar
   if ((e.metaKey || e.ctrlKey) && e.key === "l") {
     e.preventDefault();
@@ -292,4 +346,7 @@ window.addEventListener("resize", () => updateContentLayout());
 
 // Default homepage
 log("info", "Titan started");
-updateContentLayout().then(() => navigate("titan"));
+updateContentLayout().then(async () => {
+  const settings = await invoke("get_settings");
+  navigate(settings.homepage || "titan");
+});

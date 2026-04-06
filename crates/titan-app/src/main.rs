@@ -24,12 +24,49 @@ struct Bookmark {
     created_at: u64,
 }
 
+/// Browser settings, persisted to settings.json.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Settings {
+    /// Nostr relays for content resolution (manifests, relay lists, etc.)
+    relays: Vec<String>,
+    /// NIP-65 discovery relays for relay list lookups
+    discovery_relays: Vec<String>,
+    /// Blossom servers for blob fetching
+    blossom_servers: Vec<String>,
+    /// NSIT indexer pubkey (hex) for name lookups
+    indexer_pubkey: String,
+    /// Default homepage
+    homepage: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            relays: vec![
+                "wss://relay.westernbtc.com".to_string(),
+                "wss://relay.primal.net".to_string(),
+                "wss://relay.damus.io".to_string(),
+            ],
+            discovery_relays: vec![
+                "wss://purplepag.es".to_string(),
+                "wss://user.kindpag.es".to_string(),
+            ],
+            blossom_servers: vec![
+                "https://blossom.westernbtc.com".to_string(),
+            ],
+            indexer_pubkey: "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44".to_string(),
+            homepage: "titan".to_string(),
+        }
+    }
+}
+
 /// Shared app state.
 struct AppState {
     resolver: OnceCell<Resolver>,
     cache_dir: PathBuf,
     data_dir: PathBuf,
     bookmarks: std::sync::Mutex<Vec<Bookmark>>,
+    settings: std::sync::Mutex<Settings>,
 }
 
 impl AppState {
@@ -37,7 +74,14 @@ impl AppState {
         self.resolver
             .get_or_try_init(|| async {
                 info!("initializing resolver...");
-                Resolver::new(self.cache_dir.clone())
+                let settings = self.settings.lock().unwrap().clone();
+                let config = titan_resolver::ResolverConfig {
+                    relays: settings.relays,
+                    discovery_relays: settings.discovery_relays,
+                    blossom_servers: settings.blossom_servers,
+                    indexer_pubkey: settings.indexer_pubkey,
+                };
+                Resolver::new_with_config(self.cache_dir.clone(), config)
                     .await
                     .map_err(|e| format!("Failed to initialize resolver: {e}"))
             })
@@ -198,6 +242,25 @@ async fn refresh(app: tauri::AppHandle) -> Result<(), String> {
 
 // ── Bookmarks ──
 
+fn settings_path(data_dir: &PathBuf) -> PathBuf {
+    data_dir.join("settings.json")
+}
+
+fn load_settings(data_dir: &PathBuf) -> Settings {
+    let path = settings_path(data_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
+}
+
+fn save_settings(data_dir: &PathBuf, settings: &Settings) {
+    let path = settings_path(data_dir);
+    if let Ok(json) = serde_json::to_string_pretty(settings) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
 fn bookmarks_path(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("bookmarks.json")
 }
@@ -280,6 +343,27 @@ async fn is_bookmarked(
 ) -> Result<bool, String> {
     let bookmarks = state.bookmarks.lock().unwrap();
     Ok(bookmarks.iter().any(|b| b.url == url))
+}
+
+// ── Settings Commands ──
+
+#[tauri::command]
+async fn get_settings(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Settings, String> {
+    let settings = state.settings.lock().unwrap();
+    Ok(settings.clone())
+}
+
+#[tauri::command]
+async fn update_settings(
+    state: State<'_, Arc<AppState>>,
+    settings: Settings,
+) -> Result<(), String> {
+    let mut current = state.settings.lock().unwrap();
+    *current = settings;
+    save_settings(&state.data_dir, &current);
+    Ok(())
 }
 
 // ── Host Parsing ──
@@ -608,13 +692,15 @@ fn main() {
 
     let _ = std::fs::create_dir_all(&data_dir);
     let bookmarks = load_bookmarks(&data_dir);
-    info!("loaded {} bookmark(s)", bookmarks.len());
+    let settings = load_settings(&data_dir);
+    info!("loaded {} bookmark(s), settings from {}", bookmarks.len(), data_dir.display());
 
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
         cache_dir,
         data_dir,
         bookmarks: std::sync::Mutex::new(bookmarks),
+        settings: std::sync::Mutex::new(settings),
     });
 
     let protocol_state = state.clone();
@@ -715,7 +801,7 @@ fn main() {
                 }
             });
         })
-        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, resize_content, open_console, focus_address_bar, toggle_bookmark_cmd, add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked])
+        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, resize_content, open_console, focus_address_bar, toggle_bookmark_cmd, add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked, get_settings, update_settings])
         .setup(|app| {
             let window = app.get_window("main").unwrap();
             let scale = window.scale_factor().unwrap_or(1.0);

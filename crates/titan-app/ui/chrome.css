@@ -321,3 +321,74 @@ body.panel-open #loading-bar {
   color: var(--text-muted);
   margin-right: 6px;
 }
+
+/* ── Settings ── */
+
+.settings-section {
+  padding: 10px 14px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+
+.settings-textarea,
+.settings-input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  padding: 6px 8px;
+  outline: none;
+  resize: vertical;
+}
+
+.settings-textarea:focus,
+.settings-input:focus {
+  border-color: var(--border-focus);
+}
+
+.settings-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.settings-btn {
+  padding: 6px 16px;
+  background: var(--amber-dim);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  color: #000;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.settings-btn:hover {
+  background: var(--amber);
+}
+
+.settings-btn-secondary {
+  padding: 6px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-btn-secondary:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
