@@ -47,10 +47,10 @@ Native desktop app built with Rust and Tauri 2. Uses the system webview for rend
 - Intercept `nsite://` link clicks within rendered pages
 
 **Key files:**
-- `src/main.rs` — Tauri app, `navigate` command, `nsite-content://` protocol handler
-- `ui/index.html` — Browser chrome (address bar, nav buttons)
-- `ui/app.js` — Navigation logic, history, error handling, default homepage (`nsite://titan`)
-- `ui/style.css` — Titan moon theme (black + smokey amber)
+- `src/main.rs` — Tauri app, tab management, `navigate` command, `nsite-content://` protocol handler, webview factory
+- `ui/chrome.html` — Browser chrome (tab strip, address bar, nav buttons, side panels)
+- `ui/chrome.js` — Tab management, navigation, bookmarks, settings, dev console
+- `ui/chrome.css` — Titan moon theme (black + smokey amber)
 
 **No local state.** No SQLite, no Bitcoin Core dependency. The browser is a pure Nostr + Blossom client.
 
@@ -118,16 +118,26 @@ Static website published as `nsite://titan`. The browser's default homepage.
 **What it does:**
 - Name lookup via Nostr (queries kind 35129 from the indexer, race-then-linger)
 - Index stats via Nostr (queries kind 15129)
-- Client-side NSIT OP_RETURN generator for name registration (paste into any wallet)
+- Interactive bitcoin-cli command builder for registration and transfer
+- Name browser, name details with history, my-names by pubkey
 
 **Published as:**
 - Kind 35128 manifest with `d=titan` (for `nsite://titan`)
 - Kind 15128 root manifest (for direct npub access)
 - Blobs on `blossom.westernbtc.com`
 
-**Files:**
-- `app/page.tsx` — Name lookup UI, OP_RETURN generator, stats
+**Pages:**
+- `/` — Name search + stats
+- `/register` — Interactive registration walkthrough (bitcoin-cli steps)
+- `/transfer` — Interactive transfer walkthrough
+- `/browse` — Browse all registered names
+- `/name` — Name details + history (kind 1129)
+- `/my-names` — Names by pubkey
+- `/guide` — Full documentation
+
+**Key files:**
 - `lib/nostr.ts` — NDK client with race-then-linger search
+- `lib/codec.ts` — NSIT OP_RETURN encoder + npub decoder
 - `scripts/publish-v2.mjs` — nsite v2 publisher
 
 ## Resolution Flow
@@ -195,19 +205,19 @@ When the webview renders HTML that references CSS, JS, images:
 <link href="/assets/style.css">
      │
      ▼
-Webview requests: nsite-content://localhost/assets/style.css
+Webview requests: nsite-content://{pubkey_hex}.{site_name}/assets/style.css
      │
      ▼
 Tauri protocol handler intercepts
      │
      ▼
-Uses current NavContext (pubkey + site_name)
+Parses pubkey + site_name from the URL host
      │
      ▼
 Same manifest → blob pipeline (cached manifest, fast)
 ```
 
-All sub-resource requests run concurrently (OnceCell resolver, RwLock nav context).
+All sub-resource requests run concurrently. Site identity is encoded in the URL host, not shared state.
 
 ## Race-Then-Linger Search
 
@@ -242,6 +252,7 @@ Used for: name lookups, relay lists, manifests, Blossom server lists.
 | 24242 | Ephemeral | Any uploader | Blossom upload auth (BUD-01) |
 | 34128 | Addressable | Site owner | Per-file event (nsite v1, legacy) |
 | 35128 | Addressable | Site owner | Named site manifest (NIP-5A v2, d=name) |
+| 1129 | Regular | Indexer service | NSIT name history (one per action, non-replaceable) |
 | 35129 | Addressable | Indexer service | NSIT name record (d=name) |
 
 ## Bitcoin Name Protocol (NSIT)
@@ -269,8 +280,8 @@ Total: 39 + N bytes. Maximum 80 bytes (OP_RETURN limit).
 
 ### Registration Flow
 ```
-User → nsite://titan (OP_RETURN generator) → hex payload
-User → Bitcoin wallet (Sparrow/Electrum/Core) → OP_RETURN tx → broadcast
+User → nsite://titan/register → generates OP_RETURN hex + bitcoin-cli commands
+User → bitcoin-cli → create, fund, sign, broadcast transaction
   → First non-OP_RETURN output becomes ownership UTXO
 Bitcoin network → confirmation
 nsit-indexer → scans block → publishes kind 35129 event
@@ -279,8 +290,8 @@ Titan browser → queries kind 35129 → name resolves
 
 ### Transfer Flow
 ```
-User → nsite://titan/transfer → generate transfer OP_RETURN hex
-User → wallet: spend the ownership UTXO + include OP_RETURN → broadcast
+User → nsite://titan/transfer → generates transfer OP_RETURN hex + bitcoin-cli commands
+User → bitcoin-cli: spend ownership UTXO + include OP_RETURN → broadcast
   → First non-OP_RETURN output becomes new ownership UTXO
 nsit-indexer → verifies UTXO spend → publishes updated kind 35129
 ```
@@ -304,7 +315,7 @@ nsit-indexer → verifies UTXO spend → publishes updated kind 35129
 │                                              │
 │  nsit-indexer ──→ bitcoin-rpc (8332)         │
 │       │                                      │
-│       └──→ relay.westernbtc.com (443)        │
+│       └──→ westernbtc-relay-service (7777)   │
 │       └──→ relay.primal.net (443)            │
 │       └──→ relay.damus.io (443)              │
 │                                              │
@@ -338,4 +349,4 @@ Titan supports both. v2 is preferred, v1 is a fallback.
 | Name | Pubkey | Block | Txid |
 |------|--------|-------|------|
 | titan | bec1a370...5cde44 | 943619 | 322ab880...e7002f |
-| westernbtc | (registered for testing) | | |
+| bitcoin | bec1a370...5cde44 | 943978 | 673af03f...609155 |

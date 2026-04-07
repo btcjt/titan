@@ -140,7 +140,8 @@ Blossom: https://blossom.westernbtc.com
 5. ~~Tauri browser shell + protocol handler~~ (DONE)
 6. ~~Integration + error states~~ (DONE — 57 tests, nsite://titan live)
 7. ~~nsite://titan + Nostr Index~~ (DONE — search/register/transfer/browse, nsit-indexer deployed)
-8. Distribution (dmg/AppImage/msi, GitHub Actions) (NEXT)
+8. ~~Distribution~~ (DONE — GitHub Actions CI/CD, dmg/AppImage/msi, zapstore)
+9. ~~Tabs, Console, Interactive Registration~~ (DONE — multi-tab, console forwarding, bitcoin-cli builder)
 
 ## Key Decisions Made
 
@@ -165,7 +166,7 @@ Blossom: https://blossom.westernbtc.com
 ## Registered Names
 
 - `titan` — txid: 322ab8800aa8d926161ff398d5d0b6c851c66679830fe05b223a548794e7002f (block 943619)
-- `westernbtc` — registered for testing
+- `bitcoin` — txid: 673af03fef0aa5af59fd350927898bef8e4a2fc6e4d4ca6508d7cd82b4609155 (block 943978)
 
 ## Docs
 

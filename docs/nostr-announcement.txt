@@ -1,14 +1,14 @@
-I'm giving everybody a 30 minute head start. One name has been registered for testing: `titan`. Everything else is unclaimed. Keep reading to see what I'm talking about.
+I'm giving everybody a 30 minute head start. Two names have been registered for testing: `titan` and `bitcoin`. Everything else is unclaimed. Keep reading to see what I'm talking about.
 
-npub1qe3e2054qkxsyt0yzem0xxv5gdpgmstahaqma3ja6pv2n9auqelqh2q4jf
+https://2zrgjemvgxppn2jwgm61w6yrqqlcmm8njvhby68a9cj7ooo5phshakespeare.nsite.lol/
 
-Try to type that from memory. Try to read it to someone over the phone.
-
-That's been the bottleneck for nsites. You can build a site, host it on Blossom, serve it through relays — but the only way to reach it is a 63-character string, or a gateway that reintroduces DNS dependency.
+NSite's currently have two glaring problems. DNS dependency and names you can't remember. Try to type that from memory. You can't.
 
 Titan is a native desktop browser that resolves nsite:// URLs. When you type nsite://titan, the browser looks up "titan" in a name index, gets the associated Nostr pubkey, fetches the site manifest from relays, downloads the content from Blossom servers, and renders it. No DNS. No certificates. No hosting providers.
 
-The name "titan" is registered on Bitcoin using an OP_RETURN transaction. It costs about $0.10. One confirmation. Permanent.
+Titan is still in early alpha. It's missing essential features and will have bugs.
+
+The name "titan" is registered on Bitcoin using an OP_RETURN transaction. As long as it's up to me, it's permanent. You can learn more about this in the README and docs.
 
 How it works:
 
@@ -16,16 +16,16 @@ Every name registration is a single Bitcoin transaction with an OP_RETURN output
 
 First-in-chain wins. The first valid registration claims the name. Duplicates are ignored. The blockchain is the arbiter.
 
-Names are controlled by a Bitcoin UTXO. Whoever can spend that output controls the name — update the pubkey or hand off ownership entirely. No intermediary needed.
+Names are controlled by a Bitcoin UTXO. Whoever can spend that output controls the name — update the pubkey or hand off ownership entirely.
 
-No renewal. No expiration. No dispute process. A registered name exists as long as Bitcoin exists.
+Every step from name to rendered page is cryptographically verified. Name to pubkey is secured by Bitcoin proof-of-work. Pubkey to manifest is signed by the site owner's Nostr key. Manifest to content is addressed by SHA256 hash.
 
-Every step from name to rendered page is cryptographically verified. Name to pubkey is secured by Bitcoin proof-of-work. Pubkey to manifest is signed by the site owner's Nostr key. Manifest to content is addressed by SHA256 hash. No certificates needed. The entire chain is trustless.
+The browser doesn't need Bitcoin Core. Name lookups happen through Nostr events published by an indexer service that watches the blockchain. Anyone can and maybe should run their own indexer. The Titan browser uses mine by default, but you can change it to point to yours.
 
-The browser doesn't need Bitcoin Core. Name lookups happen through Nostr events published by an indexer service that watches the blockchain. You can register names at nsite://titan — it generates the OP_RETURN hex and you paste it into Sparrow or any wallet that supports OP_RETURN outputs.
+You can register names at nsite://titan — it walks you through step-by-step generating the register transaction using Bitcoin Core (bitcoin-cli).
 
-nsite:// is an open scheme. Other browsers can implement it. Other indexers can publish the same name events. Titan is the reference client, not a walled garden.
+nsite:// is an open scheme. Other browsers can implement it. Other indexers can publish the same name events. Titan is the reference client.
 
-One name registered for testing: titan. Everything else is unclaimed. No insider allocation, no reserved list. Fair launch.
+Two names registered for testing: `titan` and `bitcoin`. Everything else is unclaimed. I'm giving everyone 30 minutes from the created_at of this post to register any name they want. This might totally flop. It might not. Insert cringy Satoshi quote about getting some -- just in case.
 
 Open source: https://github.com/btcjt/titan

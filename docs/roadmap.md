@@ -77,11 +77,23 @@
 - [x] Tauri bundle config (macOS min version, Linux deps, Windows install mode)
 - [x] zapstore.dev publish script (kind 32267 app listing via nak)
 
+## Phase 9: Tabs, Console, Interactive Registration
+- [x] Tab support — multi-webview, per-tab URL/history, Cmd+T/W/1-9
+- [x] Tab strip in overlay titlebar with favicon placeholders
+- [x] Dev console forwarding (console.log/warn/error from content webviews)
+- [x] Bookmarks with side panel, inline rename, star toggle
+- [x] Settings panel (relays, discovery relays, Blossom servers, indexer pubkey, homepage)
+- [x] Kind 1129 name history events (non-replaceable chain of custody)
+- [x] Interactive bitcoin-cli command builder for registration (/register)
+- [x] Interactive bitcoin-cli command builder for transfers (/transfer)
+- [x] Wallet name support (-rpcwallet) for multi-wallet Bitcoin Core setups
+- [x] UTXO protection guide (lockunspent, setlabel, dedicated wallet)
+- [x] Registered `bitcoin` on mainnet (block 943978)
+- [x] nsit-indexer: internal k8s relay service, removed network policy
+
 ## Future
 - Loading diagnostics: show why a site is slow (no kind 10002 relay list, no kind 10063 Blossom list, missing server tags in manifest, relay timeouts)
-- Publish kind 10002 (relay list) and kind 10063 (Blossom server list) for the titan npub
-- Tab support
-- Bookmarks + history
+- History panel with search
 - Extension system
 - Name marketplace
 - Mobile (iOS/Android via Tauri)

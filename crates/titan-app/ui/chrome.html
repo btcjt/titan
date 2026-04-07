@@ -7,6 +7,12 @@
   <link rel="stylesheet" href="chrome.css">
 </head>
 <body>
+  <!-- Tab strip (top, drag region) -->
+  <div id="tab-strip" data-tauri-drag-region>
+    <div id="tab-list" data-tauri-drag-region></div>
+    <button id="btn-new-tab" title="New Tab (Cmd+T)">+</button>
+  </div>
+
   <div id="toolbar">
     <button id="btn-back" title="Back" disabled>&#x2190;</button>
     <button id="btn-forward" title="Forward" disabled>&#x2192;</button>

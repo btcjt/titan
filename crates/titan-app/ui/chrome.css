@@ -16,6 +16,7 @@
   --radius: 6px;
   --toolbar-height: 52px;
   --panel-width: 280px;
+  --tab-strip-height: 32px;
 }
 
 * {
@@ -46,14 +47,9 @@ body {
   gap: 6px;
   padding: 8px 12px;
   background: var(--bg-secondary);
-  -webkit-app-region: drag;
 }
 
-#toolbar button,
-#address-bar-container,
-#address-bar {
-  -webkit-app-region: no-drag;
-}
+/* toolbar buttons are interactive (not drag targets) */
 
 #toolbar button {
   width: 32px;
@@ -162,12 +158,129 @@ body {
   100% { background: var(--amber-dim); }
 }
 
-/* Panel-open state — shrink toolbar to make room */
+/* ── Tab Strip ── */
+
+#tab-strip {
+  display: flex;
+  align-items: flex-end;
+  height: var(--tab-strip-height);
+  background: var(--bg-primary);
+  padding: 0 4px 0 78px; /* left padding for macOS traffic lights */
+  overflow-x: auto;
+}
+
+#tab-strip::-webkit-scrollbar { display: none; }
+
+#tab-list {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  gap: 1px;
+  align-items: flex-end;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  max-width: 180px;
+  min-width: 60px;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tab:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.tab.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  height: 28px;
+}
+
+.tab-favicon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--amber-glow);
+  color: var(--amber);
+  font-size: 9px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+  line-height: 1;
+}
+
+.tab:hover .tab-close { opacity: 1; }
+.tab-close:hover { color: #c44; }
+
+#btn-new-tab {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  margin-left: 4px;
+  margin-bottom: 3px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+#btn-new-tab:hover {
+  color: var(--amber);
+  border-color: var(--amber-dim);
+}
+
+/* Panel-open state — shrink toolbar, tab strip to make room */
 body.panel-open #toolbar {
   margin-right: var(--panel-width);
 }
 
 body.panel-open #loading-bar {
+  margin-right: var(--panel-width);
+}
+
+body.panel-open #tab-strip {
   margin-right: var(--panel-width);
 }
 
@@ -304,12 +417,17 @@ body.panel-open #loading-bar {
   font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   font-size: 11px;
   line-height: 1.5;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .console-entry {
   padding: 3px 6px;
   border-bottom: 1px solid var(--border);
   word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .console-entry.info { color: var(--text-secondary); }

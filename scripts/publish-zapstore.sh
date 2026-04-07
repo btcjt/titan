@@ -32,6 +32,7 @@ nak event \
   -t "t=browser" \
   -t "t=nostr" \
   -t "t=nsite" \
+  -t "t=nsit" \
   -t "t=bitcoin" \
   wss://relay.westernbtc.com wss://relay.primal.net wss://relay.damus.io
 

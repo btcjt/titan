@@ -1,4 +1,4 @@
-// Titan browser chrome — toolbar, panels (bookmarks, dev console)
+// Titan browser chrome — toolbar, tabs, panels (bookmarks, dev console, settings)
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -17,18 +17,93 @@ const bookmarksList = document.getElementById("bookmarks-list");
 const bookmarksEmpty = document.getElementById("bookmarks-empty");
 const consoleLog = document.getElementById("console-log");
 const panelSettings = document.getElementById("panel-settings");
+const tabList = document.getElementById("tab-list");
+
+// ── State ──
 
 let currentUrl = "";
 let suppressNextPageLoad = false;
-const TOOLBAR_HEIGHT = 78;
+const CHROME_HEIGHT = 82; // tab strip (32) + toolbar (48) + loading bar (1) + 1px buffer
+const CONTENT_TOP = CHROME_HEIGHT;
 const PANEL_WIDTH = 280;
-let activePanel = null; // "bookmarks" | "console" | null
+let activePanel = null;
+let tabs = [];
+let activeTabId = null;
 
 // ── Content Webview Layout ──
 
 async function updateContentLayout() {
   const rightOffset = activePanel ? PANEL_WIDTH : 0;
-  await invoke("resize_content", { top: TOOLBAR_HEIGHT, right: rightOffset });
+  await invoke("resize_content", { top: CONTENT_TOP, right: rightOffset });
+}
+
+// ── Tabs ──
+
+function renderTabs() {
+  tabList.innerHTML = "";
+  for (const tab of tabs) {
+    const el = document.createElement("div");
+    el.className = "tab" + (tab.id === activeTabId ? " active" : "");
+    const name = tab.title || tab.display_url || "New Tab";
+    const letter = name.charAt(0).toUpperCase() || "N";
+    el.innerHTML = `
+      <span class="tab-favicon">${escapeHtml(letter)}</span>
+      <span class="tab-title">${escapeHtml(name)}</span>
+      <span class="tab-close" title="Close">&times;</span>
+    `;
+    el.addEventListener("click", (e) => {
+      if (!e.target.classList.contains("tab-close")) switchTab(tab.id);
+    });
+    el.querySelector(".tab-close").addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(tab.id);
+    });
+    tabList.appendChild(el);
+  }
+}
+
+async function createTab() {
+  const result = await invoke("create_tab");
+  tabs = result.tabs;
+  activeTabId = result.active_tab;
+  renderTabs();
+  currentUrl = "";
+  addressBar.value = "";
+  updateStarState();
+  await updateContentLayout();
+  // Navigate new tab to homepage
+  const settings = await invoke("get_settings");
+  navigate(settings.homepage || "titan");
+}
+
+async function closeTab(tabId) {
+  if (tabs.length <= 1) return;
+  const result = await invoke("close_tab", { tabId });
+  tabs = result.tabs;
+  activeTabId = result.active_tab;
+  renderTabs();
+  syncAddressBarToActiveTab();
+  await updateContentLayout();
+}
+
+async function switchTab(tabId) {
+  if (tabId === activeTabId) return;
+  const result = await invoke("switch_tab", { tabId });
+  tabs = result.tabs;
+  activeTabId = result.active_tab;
+  renderTabs();
+  syncAddressBarToActiveTab();
+  await updateContentLayout();
+}
+
+function syncAddressBarToActiveTab() {
+  const tab = tabs.find(t => t.id === activeTabId);
+  if (tab) {
+    addressBar.value = tab.display_url || "";
+    currentUrl = tab.display_url || "";
+    btnBack.disabled = !currentUrl;
+    updateStarState();
+  }
 }
 
 // ── Navigation ──
@@ -48,6 +123,13 @@ async function navigate(input) {
     btnBack.disabled = false;
     updateStarState();
     hideLoading();
+    // Update tab state locally
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (tab) {
+      tab.display_url = displayUrl;
+      tab.title = displayUrl.split("/")[0];
+      renderTabs();
+    }
     log("info", `loaded ${displayUrl}`);
   } catch (err) {
     hideLoading();
@@ -116,10 +198,8 @@ async function renderBookmarks() {
       <button class="bookmark-delete" title="Remove">&#x2715;</button>
     `;
 
-    // Click the URL to navigate
     item.querySelector(".bookmark-url").addEventListener("click", () => navigate(url));
 
-    // Title input — rename on change
     const titleInput = item.querySelector(".bookmark-title-input");
     titleInput.addEventListener("blur", async () => {
       const newTitle = titleInput.value.trim() || url;
@@ -129,11 +209,10 @@ async function renderBookmarks() {
     });
     titleInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); titleInput.blur(); }
-      e.stopPropagation(); // prevent keyboard shortcuts while typing
+      e.stopPropagation();
     });
     titleInput.addEventListener("click", (e) => e.stopPropagation());
 
-    // Delete button
     item.querySelector(".bookmark-delete").addEventListener("click", async (e) => {
       e.stopPropagation();
       await invoke("remove_bookmark", { url });
@@ -153,12 +232,10 @@ async function openPanel(name) {
     return;
   }
 
-  // Hide all panel views
   panelBookmarks.style.display = "none";
   panelConsole.style.display = "none";
   panelSettings.style.display = "none";
 
-  // Show the requested one
   if (name === "bookmarks") {
     panelTitle.textContent = "Bookmarks";
     panelBookmarks.style.display = "block";
@@ -257,23 +334,38 @@ btnStar.addEventListener("click", toggleBookmark);
 btnBookmarks.addEventListener("click", () => openPanel("bookmarks"));
 document.getElementById("btn-settings").addEventListener("click", () => openPanel("settings"));
 document.getElementById("btn-console").addEventListener("click", () => openPanel("console"));
+document.getElementById("btn-new-tab").addEventListener("click", createTab);
 document.getElementById("settings-save").addEventListener("click", saveSettings);
 document.getElementById("settings-reset").addEventListener("click", resetSettings);
 
+// Page loaded — update address bar if from active tab
 listen("page-loaded", (event) => {
-  if (event.payload) {
+  const payload = event.payload;
+  if (!payload || !payload.url) return;
+
+  const { tab_label, url } = payload;
+
+  // Update the tab's state regardless
+  const tab = tabs.find(t => t.label === tab_label);
+  if (tab) {
+    tab.display_url = url;
+    tab.title = url.split("/")[0];
+    renderTabs();
+  }
+
+  // Only update address bar if this is the active tab
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  if (activeTab && activeTab.label === tab_label) {
     if (suppressNextPageLoad) {
-      // navigate command already set the address bar
       suppressNextPageLoad = false;
     } else {
-      // Back/forward/link click — update address bar from content URL
-      addressBar.value = event.payload;
-      currentUrl = event.payload;
+      addressBar.value = url;
+      currentUrl = url;
       updateStarState();
     }
-    hideLoading();
-    log("info", `page loaded: ${event.payload}`);
   }
+  hideLoading();
+  log("info", `page loaded: ${url}`);
 });
 
 // Events from content webview keyboard shortcuts
@@ -297,6 +389,24 @@ listen("nsite-link-clicked", (event) => {
   }
 });
 
+// Console messages from content webviews
+listen("console-message", (event) => {
+  const { level, message } = event.payload;
+  log(level || "info", message);
+});
+
+listen("new-tab", () => createTab());
+listen("close-tab", () => closeTab(activeTabId));
+listen("switch-tab-number", (event) => {
+  const num = event.payload;
+  if (num === 9 && tabs.length > 0) {
+    switchTab(tabs[tabs.length - 1].id);
+  } else {
+    const idx = num - 1;
+    if (idx >= 0 && idx < tabs.length) switchTab(tabs[idx].id);
+  }
+});
+
 // Keyboard shortcuts (skip when typing in settings/inputs)
 document.addEventListener("keydown", (e) => {
   const tag = (e.target.tagName || "").toLowerCase();
@@ -311,6 +421,29 @@ document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "d") {
     e.preventDefault();
     toggleBookmark();
+  }
+  // Cmd+T — new tab
+  if ((e.metaKey || e.ctrlKey) && e.key === "t") {
+    e.preventDefault();
+    createTab();
+  }
+  // Cmd+W — close tab
+  if ((e.metaKey || e.ctrlKey) && e.key === "w") {
+    e.preventDefault();
+    if (tabs.length > 1) {
+      closeTab(activeTabId);
+    }
+  }
+  // Cmd+1-9 — switch tab
+  if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
+    e.preventDefault();
+    const num = parseInt(e.key);
+    if (num === 9 && tabs.length > 0) {
+      switchTab(tabs[tabs.length - 1].id);
+    } else {
+      const idx = num - 1;
+      if (idx < tabs.length) switchTab(tabs[idx].id);
+    }
   }
   // Cmd+Option+K — dev console (Mac) / Ctrl+Shift+K (other)
   if ((e.metaKey && e.altKey && e.code === "KeyK") ||
@@ -344,9 +477,27 @@ function escapeAttr(s) {
 // Keep content webview sized correctly on window resize
 window.addEventListener("resize", () => updateContentLayout());
 
-// Default homepage
+// ── Tab Strip Drag ──
+document.getElementById("tab-strip").addEventListener("mousedown", (e) => {
+  const attr = e.target.getAttribute("data-tauri-drag-region");
+  if (attr !== null && attr !== "false" && e.button === 0) {
+    if (e.detail === 1) {
+      e.preventDefault();
+      window.__TAURI_INTERNALS__.invoke("plugin:window|start_dragging");
+    } else if (e.detail === 2) {
+      window.__TAURI_INTERNALS__.invoke("plugin:window|internal_toggle_maximize");
+    }
+  }
+});
+
+// ── Startup ──
 log("info", "Titan started");
 updateContentLayout().then(async () => {
+  const result = await invoke("get_tabs");
+  tabs = result.tabs;
+  activeTabId = result.active_tab;
+  renderTabs();
+  // Navigate first tab to homepage
   const settings = await invoke("get_settings");
   navigate(settings.homepage || "titan");
 });

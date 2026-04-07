@@ -48,7 +48,7 @@ That's it. Simple enough to say out loud, short enough for a billboard, permanen
 
 **Names are first-come, first-served, and permanent.** There are only 36 possible single-character names. Only ~1,300 two-character names. Words like `bitcoin`, `wallet`, `news`, `shop` — each can only be claimed once, ever. There is no expiration, no appeals process, no second chance.
 
-One name registered for testing (`titan`). Everything else is unclaimed. Fair launch.
+Two names registered for testing (`titan` and `bitcoin`). Everything else is unclaimed. Fair launch.
 
 ## The Name Protocol
 
@@ -79,17 +79,17 @@ titan/
     titan-app/        Tauri desktop shell — two-webview architecture
 ```
 
-**Browser** (two-webview split):
-- Chrome webview (top): address bar, back/forward/refresh, status bar
-- Content webview (bottom): nsite content via `nsite-content://` protocol with URL-encoded site identity
-- `on_navigation`: intercepts `nsite://` links at the Rust level — no injected scripts
-- `on_page_load`: syncs content URL back to the address bar
-- Native webview history for back/forward
+**Browser** (multi-webview, tabbed):
+- Chrome webview: tab strip (in titlebar), address bar, back/forward/refresh, side panels (bookmarks, console, settings)
+- Per-tab content webviews: nsite content via `nsite-content://` protocol with URL-encoded site identity
+- `on_navigation`: intercepts `nsite://` links, keyboard shortcuts via `titan-cmd://`
+- `on_page_load`: syncs content URL back to address bar, injects console forwarding
+- Native webview history per tab for back/forward
 
 **Stack**:
 - **Language**: Rust
-- **Desktop**: Tauri 2 (system webview, multi-webview)
-- **Name index**: Nostr events (kind 35129/15129) via race-then-linger search
+- **Desktop**: Tauri 2 (system webview, multi-webview, overlay titlebar)
+- **Name index**: Nostr events (kind 35129/1129/15129) via race-then-linger search
 - **Site manifests**: NIP-5A v2 (kind 15128/35128) with v1 fallback
 - **Content storage**: Blossom servers (SHA256-verified blobs)
 - **Name ownership**: Bitcoin UTXO-based (OP_RETURN registration + transfer)

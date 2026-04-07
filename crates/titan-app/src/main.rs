@@ -1,8 +1,8 @@
 //! Titan — a native nsite:// browser for the Nostr web.
 //!
-//! Two-webview architecture:
-//! - Chrome webview (top): address bar, nav buttons, status bar
-//! - Content webview (bottom): nsite content via nsite-content:// protocol
+//! Multi-webview architecture:
+//! - Chrome webview (top): address bar, nav buttons, tab strip, side panels
+//! - Tab webviews (bottom): one per tab, nsite content via nsite-content:// protocol
 //!
 //! Named after Titan, moon of Saturn.
 
@@ -15,6 +15,37 @@ use tauri::{Emitter, Manager, State};
 use titan_resolver::Resolver;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
+
+/// A browser tab.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Tab {
+    id: u32,
+    label: String,
+    display_url: String,
+    title: String,
+}
+
+/// Tab state returned to JS.
+#[derive(Debug, Clone, Serialize)]
+struct TabsPayload {
+    tabs: Vec<Tab>,
+    active_tab: u32,
+}
+
+/// Page-loaded event payload (includes tab identity).
+#[derive(Debug, Clone, Serialize)]
+struct PageLoadedPayload {
+    tab_label: String,
+    url: String,
+}
+
+/// Console message forwarded from content webview.
+#[derive(Debug, Clone, Serialize)]
+struct ConsolePayload {
+    level: String,
+    message: String,
+    tab_label: String,
+}
 
 /// A saved bookmark.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +98,9 @@ struct AppState {
     data_dir: PathBuf,
     bookmarks: std::sync::Mutex<Vec<Bookmark>>,
     settings: std::sync::Mutex<Settings>,
+    tabs: std::sync::Mutex<Vec<Tab>>,
+    active_tab: std::sync::Mutex<u32>,
+    next_tab_id: std::sync::Mutex<u32>,
 }
 
 impl AppState {
@@ -87,6 +121,13 @@ impl AppState {
             })
             .await
     }
+}
+
+/// Get the webview label of the active tab.
+fn active_webview_label(state: &AppState) -> Option<String> {
+    let active = *state.active_tab.lock().unwrap();
+    let tabs = state.tabs.lock().unwrap();
+    tabs.iter().find(|t| t.id == active).map(|t| t.label.clone())
 }
 
 /// Parsed nsite host — pubkey + optional site name.
@@ -111,9 +152,11 @@ async fn navigate(
     // Parse "titan/path" or "npub1.../path" or just "titan"
     let url = url.trim().replace("nsite://", "");
 
+    let active_label = active_webview_label(&state).ok_or("No active tab")?;
+
     // Internal pages (bookmarks, etc.)
     if url == "internal:bookmarks" {
-        if let Some(content) = app.get_webview("content") {
+        if let Some(content) = app.get_webview(&active_label) {
             let _ = content.navigate("nsite-content://internal/bookmarks".parse().unwrap());
         }
         return Ok("bookmarks".to_string());
@@ -122,7 +165,7 @@ async fn navigate(
     // Internal error page
     if url.starts_with("internal:error:") {
         let msg = &url["internal:error:".len()..];
-        if let Some(content) = app.get_webview("content") {
+        if let Some(content) = app.get_webview(&active_label) {
             let error_url = format!("nsite-content://internal/error?msg={}", msg);
             let _ = content.navigate(error_url.parse().unwrap());
         }
@@ -166,33 +209,47 @@ async fn navigate(
 
     info!("navigating to {host}{path}");
 
-    // Navigate the content webview
-    if let Some(content) = app.get_webview("content") {
+    // Navigate the active tab's webview
+    if let Some(content) = app.get_webview(&active_label) {
         let _ = content.navigate(content_url.parse().unwrap());
     }
 
     // Return display URL for address bar
     let display = format!("{}{}", host, if path == "/" { "" } else { path });
+
+    // Update tab state
+    {
+        let active_id = *state.active_tab.lock().unwrap();
+        let mut tabs = state.tabs.lock().unwrap();
+        if let Some(tab) = tabs.iter_mut().find(|t| t.id == active_id) {
+            tab.display_url = display.clone();
+            tab.title = host.to_string();
+        }
+    }
+
     Ok(display)
 }
 
-/// Resize the content webview to accommodate panels.
+/// Resize the active tab's webview to accommodate panels.
 /// Called from chrome JS when panels open/close.
 #[tauri::command]
 async fn resize_content(
     app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
     top: f64,
     right: f64,
 ) -> Result<(), String> {
-    if let Some(window) = app.get_window("main") {
-        if let Some(content) = app.get_webview("content") {
-            let scale = window.scale_factor().unwrap_or(1.0);
-            let phys = window.inner_size().map_err(|e| e.to_string())?;
-            let lw = phys.width as f64 / scale;
-            let lh = phys.height as f64 / scale;
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(window) = app.get_window("main") {
+            if let Some(content) = app.get_webview(&label) {
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let phys = window.inner_size().map_err(|e| e.to_string())?;
+                let lw = phys.width as f64 / scale;
+                let lh = phys.height as f64 / scale;
 
-            let _ = content.set_position(tauri::LogicalPosition::new(0.0, top));
-            let _ = content.set_size(tauri::LogicalSize::new(lw - right, lh - top));
+                let _ = content.set_position(tauri::LogicalPosition::new(0.0, top));
+                let _ = content.set_size(tauri::LogicalSize::new(lw - right, lh - top));
+            }
         }
     }
     Ok(())
@@ -217,25 +274,31 @@ async fn toggle_bookmark_cmd(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn go_back(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(wv) = app.get_webview("content") {
-        wv.eval("history.back()").map_err(|e| e.to_string())?;
+async fn go_back(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&label) {
+            wv.eval("history.back()").map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
-async fn go_forward(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(wv) = app.get_webview("content") {
-        wv.eval("history.forward()").map_err(|e| e.to_string())?;
+async fn go_forward(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&label) {
+            wv.eval("history.forward()").map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
-async fn refresh(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(wv) = app.get_webview("content") {
-        wv.eval("location.reload()").map_err(|e| e.to_string())?;
+async fn refresh(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&label) {
+            wv.eval("location.reload()").map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -668,6 +731,324 @@ fn url_decode(s: &str) -> String {
     result
 }
 
+// ── Tab Commands ──
+
+#[tauri::command]
+async fn create_tab(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<TabsPayload, String> {
+    let new_id = {
+        let mut next = state.next_tab_id.lock().unwrap();
+        let id = *next;
+        *next += 1;
+        id
+    };
+    let label = format!("tab-{}", new_id);
+
+    // Hide current active tab
+    if let Some(old_label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&old_label) {
+            let _ = wv.set_size(tauri::LogicalSize::new(0.0, 0.0));
+        }
+    }
+
+    // Create new webview
+    let window = app.get_window("main").ok_or("No main window")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let phys = window.inner_size().map_err(|e| e.to_string())?;
+    let lw = phys.width as f64 / scale;
+    let lh = phys.height as f64 / scale;
+    let content_top = 82.0;
+
+    create_tab_webview(
+        &window, &app, &label,
+        "nsite-content://internal/welcome",
+        content_top, lw, lh - content_top,
+    ).map_err(|e| e.to_string())?;
+
+    let tab = Tab {
+        id: new_id,
+        label,
+        display_url: String::new(),
+        title: "New Tab".to_string(),
+    };
+
+    {
+        let mut tabs = state.tabs.lock().unwrap();
+        tabs.push(tab);
+        *state.active_tab.lock().unwrap() = new_id;
+    }
+
+    // JS will call navigate() after createTab returns
+    get_tabs_payload(&state)
+}
+
+#[tauri::command]
+async fn close_tab(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    tab_id: u32,
+) -> Result<TabsPayload, String> {
+    let tabs_len = state.tabs.lock().unwrap().len();
+    if tabs_len <= 1 {
+        return get_tabs_payload(&state);
+    }
+
+    // Find the tab to close and determine new active
+    let (label_to_close, new_active_id) = {
+        let tabs = state.tabs.lock().unwrap();
+        let active = *state.active_tab.lock().unwrap();
+        let idx = tabs.iter().position(|t| t.id == tab_id).ok_or("Tab not found")?;
+        let label = tabs[idx].label.clone();
+
+        let new_active = if tab_id == active {
+            // Switch to the next tab, or previous if closing the last
+            if idx + 1 < tabs.len() {
+                tabs[idx + 1].id
+            } else {
+                tabs[idx - 1].id
+            }
+        } else {
+            active
+        };
+        (label, new_active)
+    };
+
+    // Destroy the webview
+    if let Some(wv) = app.get_webview(&label_to_close) {
+        let _ = wv.close();
+    }
+
+    // Remove from state and set new active
+    {
+        let mut tabs = state.tabs.lock().unwrap();
+        tabs.retain(|t| t.id != tab_id);
+        *state.active_tab.lock().unwrap() = new_active_id;
+    }
+
+    // Show the new active tab
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&label) {
+            let window = app.get_window("main").ok_or("No main window")?;
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let phys = window.inner_size().map_err(|e| e.to_string())?;
+            let lw = phys.width as f64 / scale;
+            let lh = phys.height as f64 / scale;
+            let content_top = 82.0;
+            let _ = wv.set_position(tauri::LogicalPosition::new(0.0, content_top));
+            let _ = wv.set_size(tauri::LogicalSize::new(lw, lh - content_top));
+        }
+    }
+
+    get_tabs_payload(&state)
+}
+
+#[tauri::command]
+async fn switch_tab(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    tab_id: u32,
+) -> Result<TabsPayload, String> {
+    let current_active = *state.active_tab.lock().unwrap();
+    if tab_id == current_active {
+        return get_tabs_payload(&state);
+    }
+
+    // Hide old active
+    if let Some(old_label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&old_label) {
+            let _ = wv.set_size(tauri::LogicalSize::new(0.0, 0.0));
+        }
+    }
+
+    *state.active_tab.lock().unwrap() = tab_id;
+
+    // Show new active
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&label) {
+            let window = app.get_window("main").ok_or("No main window")?;
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let phys = window.inner_size().map_err(|e| e.to_string())?;
+            let lw = phys.width as f64 / scale;
+            let lh = phys.height as f64 / scale;
+            let content_top = 82.0;
+            let _ = wv.set_position(tauri::LogicalPosition::new(0.0, content_top));
+            let _ = wv.set_size(tauri::LogicalSize::new(lw, lh - content_top));
+        }
+    }
+
+    get_tabs_payload(&state)
+}
+
+#[tauri::command]
+async fn get_tabs(
+    state: State<'_, Arc<AppState>>,
+) -> Result<TabsPayload, String> {
+    get_tabs_payload(&state)
+}
+
+fn get_tabs_payload(state: &AppState) -> Result<TabsPayload, String> {
+    let tabs = state.tabs.lock().unwrap().clone();
+    let active_tab = *state.active_tab.lock().unwrap();
+    Ok(TabsPayload { tabs, active_tab })
+}
+
+// ── Webview Factory ──
+
+fn create_tab_webview(
+    window: &tauri::Window,
+    app_handle: &tauri::AppHandle,
+    label: &str,
+    url: &str,
+    top: f64,
+    width: f64,
+    height: f64,
+) -> Result<tauri::Webview, Box<dyn std::error::Error>> {
+    let handle1 = app_handle.clone();
+    let handle2 = app_handle.clone();
+    let label_nav = label.to_string();
+    let label_load = label.to_string();
+
+    let webview = window.add_child(
+        tauri::webview::WebviewBuilder::new(
+            label,
+            tauri::WebviewUrl::External(url.parse()?),
+        )
+        .on_navigation(move |url| {
+            let scheme = url.scheme();
+
+            if scheme == "nsite-content" {
+                return true;
+            }
+
+            if scheme == "titan-cmd" {
+                let cmd = url.host_str().unwrap_or("");
+                let handle = handle1.clone();
+                match cmd {
+                    "console" => { let _ = handle.emit("open-panel", "console"); }
+                    "focus-address-bar" => { let _ = handle.emit("focus-address-bar", ()); }
+                    "toggle-bookmark" => { let _ = handle.emit("toggle-bookmark", ()); }
+                    "new-tab" => { let _ = handle.emit("new-tab", ()); }
+                    "close-tab" => { let _ = handle.emit("close-tab", ()); }
+                    "console-msg" => {
+                        // Console message from content: titan-cmd://console-msg/<level>/<encoded-message>
+                        let path = url.path();
+                        let parts: Vec<&str> = path.splitn(3, '/').collect();
+                        if parts.len() >= 3 {
+                            let level = parts[1].to_string();
+                            let message = url_decode(parts[2]);
+                            let tab = label_nav.clone();
+                            let _ = handle.emit("console-message", ConsolePayload {
+                                level,
+                                message,
+                                tab_label: tab,
+                            });
+                        }
+                    }
+                    c if c.starts_with("tab-") => {
+                        if let Ok(n) = c[4..].parse::<u32>() {
+                            let _ = handle.emit("switch-tab-number", n);
+                        }
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
+            if scheme == "nsite" {
+                let url_str = url.to_string();
+                let handle = handle1.clone();
+                let wv_label = label_nav.clone();
+                tauri::async_runtime::spawn(async move {
+                    info!("intercepted nsite:// link: {url_str}");
+                    let cleaned = url_str.replace("nsite://", "");
+                    if let Some(content_wv) = handle.get_webview(&wv_label) {
+                        let _ = content_wv.navigate("nsite-content://internal/loading".parse().unwrap());
+                    }
+                    let _ = handle.emit("nsite-link-clicked", &cleaned);
+                });
+                return false;
+            }
+
+            debug!("blocked navigation to {url}");
+            false
+        })
+        .on_page_load(move |webview, payload| {
+            if let tauri::webview::PageLoadEvent::Finished = payload.event() {
+                let url = payload.url();
+                if let Some(display) = content_url_to_display(url) {
+                    let _ = handle2.emit("page-loaded", PageLoadedPayload {
+                        tab_label: label_load.clone(),
+                        url: display,
+                    });
+                }
+                let _ = webview.eval(r#"
+                    // Keyboard shortcuts
+                    document.addEventListener('keydown', function(e) {
+                        var cmd = null;
+                        if ((e.metaKey && e.altKey && e.code === 'KeyK') ||
+                            (e.ctrlKey && e.shiftKey && e.code === 'KeyK')) cmd = 'console';
+                        if ((e.metaKey || e.ctrlKey) && e.code === 'KeyL') cmd = 'focus-address-bar';
+                        if ((e.metaKey || e.ctrlKey) && e.code === 'KeyD') cmd = 'toggle-bookmark';
+                        if ((e.metaKey || e.ctrlKey) && e.code === 'KeyT') cmd = 'new-tab';
+                        if ((e.metaKey || e.ctrlKey) && e.code === 'KeyW') cmd = 'close-tab';
+                        if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') cmd = 'tab-' + e.key;
+                        if (cmd) {
+                            e.preventDefault();
+                            var a = document.createElement('a');
+                            a.href = 'titan-cmd://' + cmd;
+                            a.click();
+                        }
+                    });
+
+                    // Console message forwarding
+                    (function() {
+                        if (window.__titanConsoleHooked) return;
+                        window.__titanConsoleHooked = true;
+
+                        function fwd(level, args) {
+                            try {
+                                var msg = Array.prototype.map.call(args, function(a) {
+                                    if (typeof a === 'string') return a;
+                                    try { return JSON.stringify(a); } catch(_) { return String(a); }
+                                }).join(' ');
+                                var a = document.createElement('a');
+                                a.href = 'titan-cmd://console-msg/' + level + '/' + encodeURIComponent(msg);
+                                a.click();
+                            } catch(_) {}
+                        }
+
+                        var origLog = console.log;
+                        var origWarn = console.warn;
+                        var origError = console.error;
+                        var origInfo = console.info;
+                        var origDebug = console.debug;
+
+                        console.log = function() { origLog.apply(console, arguments); fwd('info', arguments); };
+                        console.info = function() { origInfo.apply(console, arguments); fwd('info', arguments); };
+                        console.warn = function() { origWarn.apply(console, arguments); fwd('warn', arguments); };
+                        console.error = function() { origError.apply(console, arguments); fwd('error', arguments); };
+                        console.debug = function() { origDebug.apply(console, arguments); fwd('debug', arguments); };
+
+                        window.addEventListener('error', function(e) {
+                            fwd('error', [e.message + ' at ' + (e.filename || '') + ':' + (e.lineno || '')]);
+                        });
+
+                        window.addEventListener('unhandledrejection', function(e) {
+                            fwd('error', ['Unhandled rejection: ' + (e.reason || '')]);
+                        });
+                    })();
+                "#);
+            }
+        }),
+        tauri::LogicalPosition::new(0.0, top),
+        tauri::LogicalSize::new(width, height),
+    )?;
+
+    Ok(webview)
+}
+
 // ── Main ──
 
 fn main() {
@@ -695,12 +1076,22 @@ fn main() {
     let settings = load_settings(&data_dir);
     info!("loaded {} bookmark(s), settings from {}", bookmarks.len(), data_dir.display());
 
+    let first_tab = Tab {
+        id: 0,
+        label: "tab-0".to_string(),
+        display_url: String::new(),
+        title: "New Tab".to_string(),
+    };
+
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
         cache_dir,
         data_dir,
         bookmarks: std::sync::Mutex::new(bookmarks),
         settings: std::sync::Mutex::new(settings),
+        tabs: std::sync::Mutex::new(vec![first_tab]),
+        active_tab: std::sync::Mutex::new(0),
+        next_tab_id: std::sync::Mutex::new(1),
     });
 
     let protocol_state = state.clone();
@@ -801,7 +1192,13 @@ fn main() {
                 }
             });
         })
-        .invoke_handler(tauri::generate_handler![navigate, go_back, go_forward, refresh, resize_content, open_console, focus_address_bar, toggle_bookmark_cmd, add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked, get_settings, update_settings])
+        .invoke_handler(tauri::generate_handler![
+            navigate, go_back, go_forward, refresh, resize_content,
+            open_console, focus_address_bar, toggle_bookmark_cmd,
+            add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked,
+            get_settings, update_settings,
+            create_tab, close_tab, switch_tab, get_tabs,
+        ])
         .setup(|app| {
             let window = app.get_window("main").unwrap();
             let scale = window.scale_factor().unwrap_or(1.0);
@@ -809,86 +1206,20 @@ fn main() {
             let logical_width = phys_size.width as f64 / scale;
             let logical_height = phys_size.height as f64 / scale;
 
-            let chrome_height = 78.0;
+            let content_top = 82.0; // tab strip (32) + toolbar (48) + loading bar (1) + 1px
 
-            info!("window setup: phys={}x{}, scale={}, logical={}x{}, chrome_height={}",
-                phys_size.width, phys_size.height, scale, logical_width, logical_height, chrome_height);
+            info!("window setup: phys={}x{}, scale={}, logical={}x{}, content_top={}",
+                phys_size.width, phys_size.height, scale, logical_width, logical_height, content_top);
 
-            // Content webview — single child below the chrome toolbar
-            let app_handle = app.handle().clone();
-            let app_handle2 = app.handle().clone();
-            let _content_webview = window.add_child(
-                tauri::webview::WebviewBuilder::new(
-                    "content",
-                    tauri::WebviewUrl::External("nsite-content://internal/welcome".parse().unwrap()),
-                )
-                .on_navigation(move |url| {
-                    let scheme = url.scheme();
-
-                    if scheme == "nsite-content" {
-                        return true;
-                    }
-
-                    // Internal commands from injected keyboard shortcuts
-                    if scheme == "titan-cmd" {
-                        let cmd = url.host_str().unwrap_or("");
-                        let handle = app_handle.clone();
-                        match cmd {
-                            "console" => { let _ = handle.emit("open-panel", "console"); }
-                            "focus-address-bar" => { let _ = handle.emit("focus-address-bar", ()); }
-                            "toggle-bookmark" => { let _ = handle.emit("toggle-bookmark", ()); }
-                            _ => {}
-                        }
-                        return false;
-                    }
-
-                    if scheme == "nsite" {
-                        let url_str = url.to_string();
-                        let handle = app_handle.clone();
-                        tauri::async_runtime::spawn(async move {
-                            info!("intercepted nsite:// link: {url_str}");
-                            let cleaned = url_str.replace("nsite://", "");
-                            if let Some(content_wv) = handle.get_webview("content") {
-                                let _ = content_wv.navigate("nsite-content://internal/loading".parse().unwrap());
-                            }
-                            let _ = handle.emit("nsite-link-clicked", &cleaned);
-                        });
-                        return false;
-                    }
-
-                    debug!("blocked navigation to {url}");
-                    false
-                })
-                .on_page_load(move |webview, payload| {
-                    if let tauri::webview::PageLoadEvent::Finished = payload.event() {
-                        let url = payload.url();
-                        if let Some(display) = content_url_to_display(url) {
-                            let _ = app_handle2.emit("page-loaded", &display);
-                        }
-                        // Inject keyboard shortcut listener into content pages.
-                        // Uses titan-cmd:// scheme which on_navigation intercepts.
-                        let _ = webview.eval(r#"
-                            document.addEventListener('keydown', function(e) {
-                                var cmd = null;
-                                if ((e.metaKey && e.altKey && e.code === 'KeyK') ||
-                                    (e.ctrlKey && e.shiftKey && e.code === 'KeyK')) cmd = 'console';
-                                if ((e.metaKey || e.ctrlKey) && e.code === 'KeyL') cmd = 'focus-address-bar';
-                                if ((e.metaKey || e.ctrlKey) && e.code === 'KeyD') cmd = 'toggle-bookmark';
-                                if (cmd) {
-                                    e.preventDefault();
-                                    var a = document.createElement('a');
-                                    a.href = 'titan-cmd://' + cmd;
-                                    a.click();
-                                }
-                            });
-                        "#);
-                    }
-                }),
-                tauri::LogicalPosition::new(0.0, chrome_height),
-                tauri::LogicalSize::new(
-                    logical_width,
-                    logical_height - chrome_height,
-                ),
+            // Create the first tab webview
+            create_tab_webview(
+                &window,
+                &app.handle(),
+                "tab-0",
+                "nsite-content://internal/welcome",
+                content_top,
+                logical_width,
+                logical_height - content_top,
             )?;
 
             Ok(())

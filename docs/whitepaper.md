@@ -62,7 +62,7 @@ Consider: there are only 36 possible single-character names (`a`-`z`, `0`-`9`). 
 
 This isn't a flaw — it's an intentional feature. Scarce, permanent names have value precisely because they cannot be inflated or revoked. The transfer mechanism allows names to change hands, creating a market. But there is no undo, no appeals process, no governance committee. The blockchain is the only authority.
 
-Two names — `titan` and `westernbtc` — have been registered for testing purposes. Beyond that, there is no insider allocation, no reserved list, no genesis block advantage. Every other name is unclaimed. Fair launch in the Bitcoin tradition.
+Two names — `titan` and `bitcoin` — have been registered for testing purposes. Beyond that, there is no insider allocation, no reserved list, no genesis block advantage. Every other name is unclaimed. Fair launch in the Bitcoin tradition.
 
 The supply is finite. The launch is fair. Early participants who understand this will move quickly. As Satoshi once wrote: *"It might make sense just to get some in case it catches on."*
 
@@ -158,7 +158,7 @@ Examples:
 
 ### Bitcoin name (`nsite://westernbtc`)
 
-1. **Name lookup**: Query Nostr relays for kind 35129 (name index event, `d=westernbtc`) → 32-byte Nostr pubkey. Falls back to local SQLite index if available.
+1. **Name lookup**: Query Nostr relays for kind 35129 (name index event, `d=westernbtc`) → 32-byte Nostr pubkey.
 2. **Relay discovery**: Query fallback relays for the pubkey's kind 10002 (NIP-65 relay list) event
 3. **Manifest fetch**: Query the pubkey's relays for kind 35128 (addressable manifest) with `d=westernbtc`
 4. **Path resolution**: Match the requested path against the manifest's `path` tags to get a SHA256 blob hash
@@ -179,7 +179,8 @@ Same flow as above, but:
 
 The name index is published as Nostr events by an indexer service that watches Bitcoin blocks:
 
-- **Kind 35129** (addressable, `d=name`): name record with pubkey, owner address, txid, block height
+- **Kind 35129** (addressable, `d=name`): current name state — pubkey, owner UTXO, txid, block height
+- **Kind 1129** (regular): name history log — one event per action, never replaced, full chain of custody
 - **Kind 15129** (replaceable): index stats with block height, hash, total registered names
 
 This means clients do not need to run Bitcoin Core. They query Nostr relays for name records the same way they query for site manifests. The Nostr index is a convenience layer — any node scanning the same blockchain will arrive at the same mappings, providing independent verification.
@@ -236,10 +237,8 @@ Transfer requires spending this UTXO in a transaction that includes an NSIT OP_R
 ## 8. Future Work
 
 - **Browser extensions**: Plugin system for nsite-native applications
-- **Multi-tab browsing**: Tabbed interface with session management
-- **Bookmarks and history**: Local storage of frequently visited nsites
+- **History**: Browsing history with search
 - **Name marketplace**: Transfer protocol enables buying/selling names
-- **Light client mode**: Query a trusted indexer API instead of running Bitcoin Core
 - **Mobile**: Tauri supports iOS and Android (post-desktop MVP)
 - **Search**: Nostr-native search indexing of nsite content
 
