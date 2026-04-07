@@ -80,6 +80,7 @@ titan/
 ```
 
 **Browser** (multi-webview, tabbed):
+
 - Chrome webview: tab strip (in titlebar), address bar, back/forward/refresh, side panels (bookmarks, console, settings)
 - Per-tab content webviews: nsite content via `nsite-content://` protocol with URL-encoded site identity
 - `on_navigation`: intercepts `nsite://` links, keyboard shortcuts via `titan-cmd://`
@@ -87,6 +88,7 @@ titan/
 - Native webview history per tab for back/forward
 
 **Stack**:
+
 - **Language**: Rust
 - **Desktop**: Tauri 2 (system webview, multi-webview, overlay titlebar)
 - **Name index**: Nostr events (kind 35129/1129/15129) via race-then-linger search
@@ -95,6 +97,7 @@ titan/
 - **Name ownership**: Bitcoin UTXO-based (OP_RETURN registration + transfer)
 
 **Related** (in [westernbtc-monorepo](https://github.com/btcjt/westernbtc-monorepo)):
+
 - `apps/titan-nsite/` — `nsite://titan` homepage (search, register, transfer, browse, guide)
 - `services/nsit-indexer/` — k8s service: watches Bitcoin blocks → publishes name index as Nostr events
 
@@ -112,6 +115,8 @@ cargo test
 # Run the browser
 cargo tauri dev
 ```
+
+Nix users: `direnv allow` first
 
 ## Docs
 
