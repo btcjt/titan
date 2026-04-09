@@ -91,9 +91,112 @@
 - [x] Registered `bitcoin` on mainnet (block 943978)
 - [x] nsit-indexer: internal k8s relay service, removed network policy
 
+## Phase 10: Built-in Signer (NIP-07)
+
+Titan ships with a built-in signer that injects `window.nostr` into every content webview. This makes Titan a drop-in browser for any existing nsite that uses Nostr, with no external signer required.
+
+### v1 scope
+
+**Key management**
+- [ ] Generate new nsec in-app with backup confirmation
+- [ ] Import existing nsec (nsec1... or hex)
+- [ ] Single identity (multi-identity deferred)
+- [ ] Delete / replace identity
+- [ ] Reveal nsec with password + warning
+
+**Storage & security**
+- [ ] OS keychain integration (macOS Keychain, Linux Secret Service, Windows Credential Manager)
+- [ ] Encrypted file fallback (master password) when keychain unavailable
+- [ ] Lock on app startup with OS biometric/password
+- [ ] Manual lock button in signer panel
+- [ ] Auto-lock after N minutes of inactivity (configurable)
+- [ ] Never log nsec, never transmit outside Rust process
+
+**NIP-07 API (injected as `window.nostr`)**
+- [ ] `getPublicKey()` — returns active identity's pubkey hex
+- [ ] `signEvent(event)` — signs and returns the event
+- [ ] `getRelays()` — returns configured relays with read/write markers
+- [ ] `nip44.encrypt(pubkey, plaintext)` / `nip44.decrypt(pubkey, ciphertext)`
+- [ ] `nip04.encrypt` / `nip04.decrypt` (legacy, with deprecation banner)
+- [ ] Signature verification before return (self-check)
+
+**Permission model**
+- [ ] Per-site, per-method approval storage
+- [ ] Scopes: "Allow once," "Allow for session," "Allow always," "Deny"
+- [ ] "Don't ask again" checkbox that persists the chosen scope
+- [ ] Sites identified by nsite name or npub
+
+**Approval prompt UI**
+- [ ] Focus-stealing modal with site identity (name/npub + avatar)
+- [ ] Method name + kind number + human-readable kind name
+- [ ] Event content preview (truncated + expandable)
+- [ ] Tags preview (key-value layout)
+- [ ] `created_at` sanity check (warn if >1 day off)
+- [ ] Warning banners for sensitive kinds (0, 3, 5, 10000, 10002)
+- [ ] Approve / Deny buttons
+- [ ] Scope selector
+- [ ] Copy raw event button
+- [ ] Keyboard shortcuts (Enter=approve, Esc=deny)
+- [ ] Auto-deny timeout after 60s
+
+**Signer management panel** (new side panel)
+- [ ] View active identity + pubkey
+- [ ] Switch identity (if multi-identity in v2)
+- [ ] List all sites with stored permissions
+- [ ] Revoke individual permissions or all for a site
+- [ ] Lock signer button
+- [ ] Settings entry point
+
+**History & audit log**
+- [ ] Last 100 signing events logged (timestamp, site, method, kind, approved/denied, scope applied)
+- [ ] Viewable in signer panel
+- [ ] Clear history button
+
+**Integration**
+- [ ] Bridge mechanism: content webview → `titan-cmd://nostr-request/...` → chrome → signer → `eval()` response callback
+- [ ] Works without any external signer installed
+- [ ] Prompt queue (stack multiple requests cleanly)
+
 ## Future
+
+### Signer — deferred to v2+
+- Multiple named identities (personal, work, alt)
+- Per-tab / per-site identity override
+- Identity switcher in toolbar (avatar menu)
+- Incognito mode (ephemeral throwaway key per tab)
+- NIP-06 BIP-39 mnemonic import/export
+- Encrypted backup export/import
+- Advanced approval scopes (N times, duration-based)
+- Per-kind rules ("always allow kind 1 on this site, never kind 0")
+- Rate limiting (max N signatures/minute)
+- Batch approval UI for bulk signing
+- Trust levels (untrusted/standard/trusted/full)
+- NIP-19 entity expansion in event previews
+- Markdown preview for kind 1 content
+- Event kind database with risk levels
+- Signer console (real-time request/response debug view)
+- Dry-run mode
+- Wipe on N failed unlock attempts
+- Print backup (paper + QR)
+
+### Signer — extension territory
+- NIP-46 bunker URL (`bunker://...`) remote signer support
+- Amber / nostrconnect mobile pairing
+- Hardware wallet support (Trezor, Ledger via NIP-07-over-USB)
+- Delegated signing (NIP-26)
+- Multi-sig / FROST threshold signatures
+- Import from Alby / nos2x
+
+### Extension system (after signer is solid)
+- Side panel extensions (nsites with `["t", "titan-extension"]` tag)
+- `window.titanExt` message bus for content page ↔ extension communication
+- Extensions as alternate `window.nostr` providers (NIP-07 proxies to external signers)
+- Event-driven daemon extensions (passive Nostr listeners in Web Workers)
+- Extension manager panel (install/uninstall, permissions, updates)
+
+### Other future work
 - Loading diagnostics: show why a site is slow (no kind 10002 relay list, no kind 10063 Blossom list, missing server tags in manifest, relay timeouts)
 - History panel with search
-- Extension system
 - Name marketplace
 - Mobile (iOS/Android via Tauri)
+- Relay connection keepalive / reconnect after idle (fixes stale manifest errors after long idle)

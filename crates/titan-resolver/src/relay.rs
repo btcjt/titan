@@ -36,6 +36,28 @@ pub struct NsitNameRecord {
     pub block_height: u64,
 }
 
+/// Profile metadata from a kind 0 event.
+#[derive(Debug, Clone, Default)]
+pub struct ProfileMetadata {
+    pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub about: Option<String>,
+    pub picture: Option<String>,
+    pub nip05: Option<String>,
+    pub lud16: Option<String>,
+    pub website: Option<String>,
+    /// created_at of the profile event (proxy for "last updated")
+    pub updated_at: u64,
+}
+
+/// An entry in a kind 10002 relay list.
+#[derive(Debug, Clone)]
+pub struct RelayListEntry {
+    pub url: String,
+    /// "read", "write", or "both"
+    pub marker: String,
+}
+
 /// Manages a pool of Nostr relay connections.
 pub struct RelayPool {
     client: Client,
@@ -181,6 +203,109 @@ impl RelayPool {
 
         debug!("found {} relay(s) for {pubkey}", urls.len());
         Ok(urls)
+    }
+
+    /// Fetch the relay list (kind 10002) with read/write markers for each relay.
+    pub async fn fetch_relay_list_detailed(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Vec<RelayListEntry>, RelayError> {
+        let filter = Filter::new()
+            .author(*pubkey)
+            .kind(Kind::RelayList);
+
+        let mut stream = self
+            .client
+            .stream_events(vec![filter], Some(DISCOVERY_TIMEOUT))
+            .await
+            .map_err(|e| RelayError::Fetch(e.to_string()))?;
+
+        let mut events: Vec<Event> = Vec::new();
+
+        match tokio::time::timeout(DISCOVERY_TIMEOUT, stream.next()).await {
+            Ok(Some(event)) => {
+                events.push(event);
+                let deadline = tokio::time::Instant::now() + LINGER_DURATION;
+                loop {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() { break; }
+                    match tokio::time::timeout(remaining, stream.next()).await {
+                        Ok(Some(event)) => events.push(event),
+                        _ => break,
+                    }
+                }
+            }
+            _ => return Ok(vec![]),
+        }
+
+        let event = match Self::newest_event(events) {
+            Some(e) => e,
+            None => return Ok(vec![]),
+        };
+
+        let entries: Vec<RelayListEntry> = event
+            .tags
+            .iter()
+            .filter_map(|tag| {
+                let values: Vec<&str> = tag.as_slice().iter().map(|s| s.as_str()).collect();
+                if values.len() >= 2 && values[0] == "r" {
+                    let marker = if values.len() >= 3 {
+                        values[2].to_string()
+                    } else {
+                        "both".to_string()
+                    };
+                    Some(RelayListEntry {
+                        url: values[1].to_string(),
+                        marker,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Fetch profile metadata (kind 0) for a pubkey.
+    pub async fn fetch_profile(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<ProfileMetadata>, RelayError> {
+        let filter = Filter::new()
+            .author(*pubkey)
+            .kind(Kind::Metadata);
+
+        let events = self.race_fetch(filter).await?;
+        let event = match Self::newest_event(events) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Parse content as JSON
+        let json: serde_json::Value = match serde_json::from_str(&event.content) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+
+        fn get_str(v: &serde_json::Value, key: &str) -> Option<String> {
+            v.get(key)
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+        }
+
+        Ok(Some(ProfileMetadata {
+            name: get_str(&json, "name"),
+            display_name: get_str(&json, "display_name")
+                .or_else(|| get_str(&json, "displayName")),
+            about: get_str(&json, "about"),
+            picture: get_str(&json, "picture"),
+            nip05: get_str(&json, "nip05"),
+            lud16: get_str(&json, "lud16"),
+            website: get_str(&json, "website"),
+            updated_at: event.created_at.as_u64(),
+        }))
     }
 
     /// Fetch the Blossom server list (kind 10063) for a pubkey.

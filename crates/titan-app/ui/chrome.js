@@ -12,10 +12,15 @@ const loadingBar = document.getElementById("loading-bar");
 const sidePanel = document.getElementById("side-panel");
 const panelTitle = document.getElementById("panel-title");
 const panelBookmarks = document.getElementById("panel-bookmarks");
+const panelInfo = document.getElementById("panel-info");
+const infoContent = document.getElementById("info-content");
+const panelSigner = document.getElementById("panel-signer");
+const signerContent = document.getElementById("signer-content");
 const panelConsole = document.getElementById("panel-console");
 const bookmarksList = document.getElementById("bookmarks-list");
 const bookmarksEmpty = document.getElementById("bookmarks-empty");
 const consoleLog = document.getElementById("console-log");
+const consoleInput = document.getElementById("console-input");
 const panelSettings = document.getElementById("panel-settings");
 const tabList = document.getElementById("tab-list");
 
@@ -24,7 +29,12 @@ const tabList = document.getElementById("tab-list");
 let currentUrl = "";
 let suppressNextPageLoad = false;
 const CHROME_HEIGHT = 82; // tab strip (32) + toolbar (48) + loading bar (1) + 1px buffer
-const CONTENT_TOP = CHROME_HEIGHT;
+
+function computeContentTop() {
+  const banner = document.getElementById("update-banner");
+  const bannerHeight = banner && banner.offsetParent !== null ? banner.offsetHeight : 0;
+  return CHROME_HEIGHT + bannerHeight;
+}
 const PANEL_WIDTH = 280;
 let activePanel = null;
 let tabs = [];
@@ -34,7 +44,7 @@ let activeTabId = null;
 
 async function updateContentLayout() {
   const rightOffset = activePanel ? PANEL_WIDTH : 0;
-  await invoke("resize_content", { top: CONTENT_TOP, right: rightOffset });
+  await invoke("resize_content", { top: computeContentTop(), right: rightOffset });
 }
 
 // ── Tabs ──
@@ -88,12 +98,18 @@ async function closeTab(tabId) {
 
 async function switchTab(tabId) {
   if (tabId === activeTabId) return;
+  const prevHost = currentUrl.split("/")[0];
   const result = await invoke("switch_tab", { tabId });
   tabs = result.tabs;
   activeTabId = result.active_tab;
   renderTabs();
   syncAddressBarToActiveTab();
   await updateContentLayout();
+  // If the host changed and the info panel is open, refresh it
+  const newHost = currentUrl.split("/")[0];
+  if (activePanel === "info" && prevHost !== newHost) {
+    await renderSiteInfo();
+  }
 }
 
 function syncAddressBarToActiveTab() {
@@ -115,6 +131,7 @@ async function navigate(input) {
   showLoading();
   log("info", `navigating to ${cleaned}`);
 
+  const prevHost = currentUrl.split("/")[0];
   try {
     const displayUrl = await invoke("navigate", { url: cleaned });
     addressBar.value = displayUrl;
@@ -129,6 +146,11 @@ async function navigate(input) {
       tab.display_url = displayUrl;
       tab.title = displayUrl.split("/")[0];
       renderTabs();
+    }
+    // If the host changed and the info panel is open, refresh it
+    const newHost = displayUrl.split("/")[0];
+    if (activePanel === "info" && prevHost !== newHost) {
+      await renderSiteInfo();
     }
     log("info", `loaded ${displayUrl}`);
   } catch (err) {
@@ -224,6 +246,382 @@ async function renderBookmarks() {
   }
 }
 
+// ── Site Info Panel ──
+
+function renderProfileSection(profile) {
+  if (!profile) return "";
+  const displayName = profile.display_name || profile.name;
+  const parts = [];
+  if (profile.picture) {
+    parts.push(`<div class="info-avatar"><img src="${escapeAttr(profile.picture)}" alt="" onerror="this.style.display='none'"></div>`);
+  }
+  if (displayName) {
+    parts.push(`<div class="info-section"><div class="info-label">Name</div><div class="info-value">${escapeHtml(displayName)}</div></div>`);
+  }
+  if (profile.nip05) {
+    parts.push(`<div class="info-section"><div class="info-label">NIP-05</div><div class="info-value mono small">${escapeHtml(profile.nip05)}</div></div>`);
+  }
+  if (profile.about) {
+    parts.push(`<div class="info-section"><div class="info-label">About</div><div class="info-value" style="white-space:pre-wrap;">${escapeHtml(profile.about)}</div></div>`);
+  }
+  if (profile.website) {
+    parts.push(`<div class="info-section"><div class="info-label">Website</div><div class="info-value small"><a href="${escapeAttr(profile.website)}" target="_blank" rel="noopener">${escapeHtml(profile.website)}</a></div></div>`);
+  }
+  if (profile.lud16) {
+    parts.push(`<div class="info-section"><div class="info-label">Lightning</div><div class="info-value mono small">${escapeHtml(profile.lud16)}</div></div>`);
+  }
+  if (profile.updated_at) {
+    const date = new Date(profile.updated_at * 1000);
+    parts.push(`<div class="info-section"><div class="info-label">Profile updated</div><div class="info-value small">${date.toLocaleDateString()} ${date.toLocaleTimeString()}</div></div>`);
+  }
+  return parts.join("");
+}
+
+function renderRelaysSection(relays) {
+  if (!relays || relays.length === 0) return "";
+  const items = relays.map((r) => {
+    const markerLabel = r.marker === "write" ? "write" : r.marker === "read" ? "read" : "r/w";
+    return `<div class="info-relay">
+      <span class="info-relay-marker marker-${r.marker}">${markerLabel}</span>
+      <span class="info-relay-url">${escapeHtml(r.url)}</span>
+    </div>`;
+  }).join("");
+  return `
+    <div class="info-section">
+      <div class="info-label">Relays (NIP-65)</div>
+      <div class="info-relays">${items}</div>
+    </div>
+  `;
+}
+
+async function renderSiteInfo() {
+  infoContent.innerHTML = `<div class="info-loading">Loading...</div>`;
+  try {
+    const info = await invoke("get_site_info", { url: currentUrl });
+    if (info.kind === "internal") {
+      infoContent.innerHTML = `<div class="info-empty">Internal page &mdash; no site info.</div>`;
+      return;
+    }
+
+    let html = "";
+
+    if (info.kind === "name") {
+      const utxoShort = info.owner_txid.slice(0, 12) + "..." + info.owner_txid.slice(-8);
+      const txShort = info.txid.slice(0, 12) + "..." + info.txid.slice(-8);
+      html += `
+        <div class="info-section">
+          <div class="info-label">Bitcoin Name</div>
+          <div class="info-value" style="color:var(--amber);font-size:16px;">${escapeHtml(info.name)}</div>
+        </div>
+        ${renderProfileSection(info.profile)}
+        <div class="info-section">
+          <div class="info-label">Resolves to</div>
+          <div class="info-value mono small">${escapeHtml(info.npub)}</div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">Owner UTXO</div>
+          <div class="info-value mono small">
+            <a href="https://mempool.space/tx/${info.owner_txid}" target="_blank" rel="noopener">
+              ${escapeHtml(utxoShort)}:${info.owner_vout}
+            </a>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">Last action tx</div>
+          <div class="info-value mono small">
+            <a href="https://mempool.space/tx/${info.txid}" target="_blank" rel="noopener">
+              ${escapeHtml(txShort)}
+            </a>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">Registered at block</div>
+          <div class="info-value mono">${info.block_height.toLocaleString()}</div>
+        </div>
+        ${renderRelaysSection(info.relays)}
+        <div class="info-section">
+          <a class="info-link" href="#" data-nav="${escapeAttr(info.name)}">View full details &rarr;</a>
+        </div>
+      `;
+    } else if (info.kind === "npub") {
+      html += `
+        ${renderProfileSection(info.profile)}
+        <div class="info-section">
+          <div class="info-label">npub</div>
+          <div class="info-value mono small">${escapeHtml(info.npub)}</div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">Pubkey (hex)</div>
+          <div class="info-value mono small">${escapeHtml(info.pubkey)}</div>
+        </div>
+        ${renderRelaysSection(info.relays)}
+        <div class="info-section">
+          <div class="info-note">Direct npub reference. No Bitcoin name is registered.</div>
+        </div>
+      `;
+    }
+
+    infoContent.innerHTML = html;
+    infoContent.querySelector("[data-nav]")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      const name = e.target.dataset.nav;
+      navigate(`titan/name?q=${name}`);
+      closePanel();
+    });
+  } catch (err) {
+    const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
+    infoContent.innerHTML = `<div class="info-empty">${escapeHtml(msg)}</div>`;
+  }
+}
+
+// ── Updater ──
+
+let pendingUpdate = null;
+
+async function checkForUpdate(manual) {
+  const statusEl = document.getElementById("settings-update-status");
+  if (statusEl && manual) {
+    statusEl.textContent = "Checking...";
+  }
+  try {
+    const info = await invoke("check_for_update");
+    if (info.available) {
+      pendingUpdate = info;
+      showUpdateBanner(info);
+      if (statusEl) {
+        statusEl.innerHTML = `Update available: <span style="color:var(--amber);">${escapeHtml(info.new_version)}</span>`;
+      }
+      log("info", `update available: ${info.new_version}`);
+    } else {
+      pendingUpdate = null;
+      hideUpdateBanner();
+      if (statusEl) {
+        statusEl.textContent = `Up to date (v${info.current_version})`;
+      }
+      if (manual) log("info", `already on latest version (${info.current_version})`);
+    }
+  } catch (err) {
+    const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
+    if (statusEl) {
+      statusEl.textContent = "Check failed: " + msg;
+    }
+    log("error", "update check failed: " + msg);
+  }
+}
+
+function showUpdateBanner(info) {
+  const banner = document.getElementById("update-banner");
+  const text = document.getElementById("update-banner-text");
+  text.textContent = `Titan ${info.new_version} is available`;
+  banner.style.display = "flex";
+  updateContentLayout();
+}
+
+function hideUpdateBanner() {
+  const banner = document.getElementById("update-banner");
+  banner.style.display = "none";
+  updateContentLayout();
+}
+
+async function installPendingUpdate() {
+  if (!pendingUpdate) return;
+  if (!confirm(`Install Titan ${pendingUpdate.new_version}?\n\nTitan will restart after the update is downloaded.`)) return;
+  log("info", "downloading and installing update...");
+  try {
+    await invoke("install_update");
+  } catch (err) {
+    const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
+    log("error", "install failed: " + msg);
+    alert("Update install failed: " + msg);
+  }
+}
+
+document.getElementById("update-banner-install").addEventListener("click", installPendingUpdate);
+document.getElementById("update-banner-dismiss").addEventListener("click", hideUpdateBanner);
+document.getElementById("settings-check-update").addEventListener("click", () => checkForUpdate(true));
+
+// ── Signer Panel ──
+
+async function renderSignerPanel() {
+  signerContent.innerHTML = `<div class="info-loading">Loading...</div>`;
+  let status;
+  try {
+    status = await invoke("signer_status");
+  } catch (err) {
+    signerContent.innerHTML = `<div class="info-empty">${escapeHtml(String(err))}</div>`;
+    return;
+  }
+
+  if (!status.has_identity) {
+    renderSignerNotConfigured();
+    return;
+  }
+  if (!status.unlocked) {
+    renderSignerLocked();
+    return;
+  }
+  renderSignerUnlocked(status.pubkey);
+}
+
+function renderSignerNotConfigured() {
+  signerContent.innerHTML = `
+    <div class="info-section">
+      <div class="info-label">No identity configured</div>
+      <div class="info-value small" style="color:var(--text-secondary);margin-top:4px;">
+        Titan has a built-in Nostr signer. Create a new identity or import an
+        existing one to get started.
+      </div>
+    </div>
+    <div class="info-section">
+      <button class="signer-btn signer-btn-primary" id="btn-signer-create">Create new identity</button>
+      <button class="signer-btn" id="btn-signer-import-toggle">Import existing nsec</button>
+    </div>
+    <div class="info-section" id="signer-import-section" style="display:none;">
+      <div class="info-label">Paste nsec or hex</div>
+      <input type="password" class="signer-input" id="signer-import-input" placeholder="nsec1... or 64-char hex" spellcheck="false" autocomplete="off">
+      <div class="signer-actions">
+        <button class="signer-btn signer-btn-primary" id="btn-signer-import">Import</button>
+        <button class="signer-btn signer-btn-secondary" id="btn-signer-import-cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("btn-signer-create").addEventListener("click", async () => {
+    if (!confirm("Generate a new Nostr identity?\n\nYou should back up your nsec after creation by clicking 'Reveal nsec'.")) return;
+    try {
+      await invoke("signer_create");
+      log("info", "signer: created new identity");
+      renderSignerPanel();
+    } catch (err) {
+      alert("Failed to create identity: " + err);
+    }
+  });
+
+  const importSection = document.getElementById("signer-import-section");
+  document.getElementById("btn-signer-import-toggle").addEventListener("click", () => {
+    importSection.style.display = "block";
+    document.getElementById("signer-import-input").focus();
+  });
+  document.getElementById("btn-signer-import-cancel").addEventListener("click", () => {
+    importSection.style.display = "none";
+    document.getElementById("signer-import-input").value = "";
+  });
+  document.getElementById("btn-signer-import").addEventListener("click", async () => {
+    const input = document.getElementById("signer-import-input");
+    const secret = input.value.trim();
+    if (!secret) return;
+    try {
+      await invoke("signer_import", { secret });
+      input.value = "";
+      log("info", "signer: imported identity");
+      renderSignerPanel();
+    } catch (err) {
+      alert("Failed to import: " + err);
+    }
+  });
+  document.getElementById("signer-import-input").addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") document.getElementById("btn-signer-import").click();
+  });
+}
+
+function renderSignerLocked() {
+  signerContent.innerHTML = `
+    <div class="info-section">
+      <div class="info-label">Signer locked</div>
+      <div class="info-value small" style="color:var(--text-secondary);margin-top:4px;">
+        Your identity is stored in the system keychain. Unlock to use it for
+        signing Nostr events.
+      </div>
+    </div>
+    <div class="info-section">
+      <button class="signer-btn signer-btn-primary" id="btn-signer-unlock">Unlock</button>
+    </div>
+  `;
+  document.getElementById("btn-signer-unlock").addEventListener("click", async () => {
+    try {
+      await invoke("signer_unlock");
+      log("info", "signer: unlocked");
+      renderSignerPanel();
+    } catch (err) {
+      alert("Failed to unlock: " + err);
+    }
+  });
+}
+
+function renderSignerUnlocked(pubkeyHex) {
+  // Derive npub client-side for display (simple — Rust already has it but we
+  // can't easily pass both without another call; just show pubkey hex + offer
+  // a "copy npub" button that fetches it)
+  signerContent.innerHTML = `
+    <div class="info-section">
+      <div class="info-label">Active identity</div>
+      <div class="info-value" style="color:var(--amber);margin-top:2px;">Unlocked</div>
+    </div>
+    <div class="info-section">
+      <div class="info-label">Pubkey (hex)</div>
+      <div class="info-value mono small" id="signer-pubkey-hex" style="cursor:pointer;" title="Click to copy">${escapeHtml(pubkeyHex)}</div>
+    </div>
+    <div class="info-section">
+      <button class="signer-btn" id="btn-signer-reveal">Reveal nsec</button>
+      <button class="signer-btn" id="btn-signer-lock-now">Lock signer</button>
+      <button class="signer-btn signer-btn-danger" id="btn-signer-delete">Delete identity</button>
+    </div>
+    <div class="info-section" id="signer-reveal-section" style="display:none;">
+      <div class="info-label" style="color:#c88;">Your nsec (KEEP SECRET)</div>
+      <div class="info-value mono small" id="signer-nsec-value" style="word-break:break-all;cursor:pointer;" title="Click to copy"></div>
+      <div class="info-value small" style="margin-top:6px;color:var(--text-muted);">
+        Anyone with this key can impersonate you. Back it up offline and never share it.
+      </div>
+      <button class="signer-btn signer-btn-secondary" id="btn-signer-reveal-close" style="margin-top:8px;">Hide</button>
+    </div>
+  `;
+
+  document.getElementById("signer-pubkey-hex").addEventListener("click", () => {
+    navigator.clipboard.writeText(pubkeyHex);
+    log("info", "signer: copied pubkey to clipboard");
+  });
+
+  const revealSection = document.getElementById("signer-reveal-section");
+  document.getElementById("btn-signer-reveal").addEventListener("click", async () => {
+    if (!confirm("Reveal your nsec?\n\nAnyone who sees this key can impersonate you. Make sure nobody is looking over your shoulder.")) return;
+    try {
+      const nsec = await invoke("signer_reveal_nsec");
+      const valueEl = document.getElementById("signer-nsec-value");
+      valueEl.textContent = nsec;
+      valueEl.addEventListener("click", () => {
+        navigator.clipboard.writeText(nsec);
+        log("info", "signer: copied nsec to clipboard");
+      });
+      revealSection.style.display = "block";
+    } catch (err) {
+      alert("Failed to reveal: " + err);
+    }
+  });
+  document.getElementById("btn-signer-reveal-close").addEventListener("click", () => {
+    revealSection.style.display = "none";
+    document.getElementById("signer-nsec-value").textContent = "";
+  });
+
+  document.getElementById("btn-signer-lock-now").addEventListener("click", async () => {
+    await invoke("signer_lock");
+    log("info", "signer: locked");
+    renderSignerPanel();
+  });
+
+  document.getElementById("btn-signer-delete").addEventListener("click", async () => {
+    if (!confirm("Delete your identity?\n\nThis removes the nsec from the system keychain permanently. If you don't have a backup, you will lose access to this identity forever.\n\nContinue?")) return;
+    if (!confirm("Really delete?\n\nThis cannot be undone.")) return;
+    try {
+      await invoke("signer_delete");
+      log("warn", "signer: identity deleted");
+      renderSignerPanel();
+    } catch (err) {
+      alert("Failed to delete: " + err);
+    }
+  });
+}
+
 // ── Generic Panel System ──
 
 async function openPanel(name) {
@@ -235,6 +633,8 @@ async function openPanel(name) {
   panelBookmarks.style.display = "none";
   panelConsole.style.display = "none";
   panelSettings.style.display = "none";
+  panelInfo.style.display = "none";
+  panelSigner.style.display = "none";
 
   if (name === "bookmarks") {
     panelTitle.textContent = "Bookmarks";
@@ -243,15 +643,26 @@ async function openPanel(name) {
   } else if (name === "console") {
     panelTitle.textContent = "Console";
     panelConsole.style.display = "block";
+    setTimeout(() => consoleInput.focus(), 0);
   } else if (name === "settings") {
     panelTitle.textContent = "Settings";
     panelSettings.style.display = "block";
     await loadSettingsUI();
+  } else if (name === "info") {
+    panelTitle.textContent = "Site Info";
+    panelInfo.style.display = "block";
+    await renderSiteInfo();
+  } else if (name === "signer") {
+    panelTitle.textContent = "Signer";
+    panelSigner.style.display = "block";
+    await renderSignerPanel();
   }
 
   activePanel = name;
   sidePanel.style.display = "flex";
   document.body.classList.add("panel-open");
+  document.body.classList.toggle("panel-console", name === "console");
+  updatePanelButtonState();
   await updateContentLayout();
 }
 
@@ -259,10 +670,120 @@ async function closePanel() {
   activePanel = null;
   sidePanel.style.display = "none";
   document.body.classList.remove("panel-open");
+  document.body.classList.remove("panel-console");
+  updatePanelButtonState();
   await updateContentLayout();
 }
 
+function updatePanelButtonState() {
+  document.querySelectorAll("#toolbar button[data-panel]").forEach((btn) => {
+    if (btn.dataset.panel === activePanel) {
+      btn.classList.add("panel-active");
+    } else {
+      btn.classList.remove("panel-active");
+    }
+  });
+}
+
 // ── Dev Console ──
+
+function logEvalInput(code) {
+  const entry = document.createElement("div");
+  entry.className = "console-entry eval-input";
+  const prompt = document.createElement("span");
+  prompt.className = "console-time";
+  prompt.textContent = "> ";
+  entry.appendChild(prompt);
+  const codeEl = document.createElement("span");
+  codeEl.textContent = code;
+  entry.appendChild(codeEl);
+  consoleLog.appendChild(entry);
+  consoleLog.scrollTop = consoleLog.scrollHeight;
+}
+
+function logEvalResult(level, text) {
+  const entry = document.createElement("div");
+  entry.className = `console-entry eval-result ${level}`;
+  const prefix = document.createElement("span");
+  prefix.className = "console-time";
+  prefix.textContent = level === "error" ? "!" : "\u2190";
+  entry.appendChild(prefix);
+  const pre = document.createElement("span");
+  pre.style.whiteSpace = "pre-wrap";
+  pre.textContent = " " + text;
+  entry.appendChild(pre);
+  consoleLog.appendChild(entry);
+  consoleLog.scrollTop = consoleLog.scrollHeight;
+}
+
+// REPL history (up/down arrows)
+const consoleHistory = [];
+let consoleHistoryIdx = 0;
+
+async function submitConsoleEval() {
+  const code = consoleInput.value.trim();
+  if (!code) return;
+  logEvalInput(code);
+  consoleHistory.push(code);
+  if (consoleHistory.length > 100) consoleHistory.shift();
+  consoleHistoryIdx = consoleHistory.length;
+  consoleInput.value = "";
+  try {
+    await invoke("console_eval", { code });
+  } catch (err) {
+    logEvalResult("error", "console_eval failed: " + (err.message || String(err)));
+  }
+}
+
+consoleInput.addEventListener("keydown", (e) => {
+  e.stopPropagation(); // prevent Cmd+L etc. from triggering toolbar shortcuts
+  if (e.key === "Enter") {
+    e.preventDefault();
+    submitConsoleEval();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (consoleHistoryIdx > 0) {
+      consoleHistoryIdx -= 1;
+      consoleInput.value = consoleHistory[consoleHistoryIdx] || "";
+    }
+  } else if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (consoleHistoryIdx < consoleHistory.length - 1) {
+      consoleHistoryIdx += 1;
+      consoleInput.value = consoleHistory[consoleHistoryIdx] || "";
+    } else {
+      consoleHistoryIdx = consoleHistory.length;
+      consoleInput.value = "";
+    }
+  }
+});
+
+function logRust(level, target, msg) {
+  const entry = document.createElement("div");
+  entry.className = `console-entry rust ${level}`;
+
+  const time = document.createElement("span");
+  time.className = "console-time";
+  time.textContent = new Date().toLocaleTimeString();
+  entry.appendChild(time);
+
+  const tag = document.createElement("span");
+  tag.className = "console-rust-tag";
+  tag.textContent = "[rust]";
+  entry.appendChild(tag);
+
+  const targetSpan = document.createElement("span");
+  targetSpan.className = "console-rust-target";
+  targetSpan.textContent = " " + target;
+  entry.appendChild(targetSpan);
+
+  const text = document.createElement("span");
+  text.textContent = " " + msg;
+  entry.appendChild(text);
+
+  consoleLog.appendChild(entry);
+  consoleLog.scrollTop = consoleLog.scrollHeight;
+}
 
 function log(level, msg) {
   const entry = document.createElement("div");
@@ -330,6 +851,8 @@ addressBar.addEventListener("keydown", (e) => {
 btnBack.addEventListener("click", () => invoke("go_back"));
 btnForward.addEventListener("click", () => invoke("go_forward"));
 btnRefresh.addEventListener("click", () => invoke("refresh"));
+document.getElementById("btn-info").addEventListener("click", () => openPanel("info"));
+document.getElementById("btn-signer").addEventListener("click", () => openPanel("signer"));
 btnStar.addEventListener("click", toggleBookmark);
 btnBookmarks.addEventListener("click", () => openPanel("bookmarks"));
 document.getElementById("btn-settings").addEventListener("click", () => openPanel("settings"));
@@ -359,9 +882,15 @@ listen("page-loaded", (event) => {
     if (suppressNextPageLoad) {
       suppressNextPageLoad = false;
     } else {
+      const prevHost = currentUrl.split("/")[0];
       addressBar.value = url;
       currentUrl = url;
       updateStarState();
+      // If the host changed and the info panel is open, refresh it
+      const newHost = url.split("/")[0];
+      if (activePanel === "info" && prevHost !== newHost) {
+        renderSiteInfo();
+      }
     }
   }
   hideLoading();
@@ -393,6 +922,18 @@ listen("nsite-link-clicked", (event) => {
 listen("console-message", (event) => {
   const { level, message } = event.payload;
   log(level || "info", message);
+});
+
+listen("console-result", (event) => {
+  const { level, message } = event.payload;
+  logEvalResult(level || "info", message);
+});
+
+// Rust-side tracing events forwarded from the Tauri layer
+listen("rust-log", (event) => {
+  const { level, target, message } = event.payload || {};
+  if (!message) return;
+  logRust(level || "info", target || "", message);
 });
 
 listen("new-tab", () => createTab());
@@ -500,4 +1041,8 @@ updateContentLayout().then(async () => {
   // Navigate first tab to homepage
   const settings = await invoke("get_settings");
   navigate(settings.homepage || "titan");
+
+  // Check for updates in the background (non-blocking, delayed slightly
+  // to avoid competing with initial page load for network)
+  setTimeout(() => checkForUpdate(false), 3000);
 });

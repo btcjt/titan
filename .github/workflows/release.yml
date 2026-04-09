@@ -56,7 +56,7 @@ jobs:
         run: cargo tauri build --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -65,10 +65,14 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             target/${{ matrix.target }}/release/bundle/deb/*.deb
             target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
             target/${{ matrix.target }}/release/bundle/msi/*.msi
+            target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
 
   release:
     needs: build
@@ -81,10 +85,65 @@ jobs:
         with:
           path: artifacts
 
+      - name: Generate latest.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NOTES="Titan ${GITHUB_REF_NAME}"
+
+          # Find each platform's updater artifact + signature
+          MAC_ARM_TAR=$(find artifacts -name "*.app.tar.gz" -path "*aarch64-apple-darwin*" | head -1)
+          MAC_ARM_SIG=$(find artifacts -name "*.app.tar.gz.sig" -path "*aarch64-apple-darwin*" | head -1)
+          LINUX_APPIMAGE=$(find artifacts -name "*.AppImage" | head -1)
+          LINUX_SIG=$(find artifacts -name "*.AppImage.sig" | head -1)
+          WIN_NSIS=$(find artifacts -name "*.exe" -path "*nsis*" | head -1)
+          WIN_SIG=$(find artifacts -name "*.exe.sig" -path "*nsis*" | head -1)
+
+          read_sig() {
+            if [ -f "$1" ]; then cat "$1"; else echo ""; fi
+          }
+
+          MAC_ARM_SIG_CONTENT=$(read_sig "$MAC_ARM_SIG")
+          LINUX_SIG_CONTENT=$(read_sig "$LINUX_SIG")
+          WIN_SIG_CONTENT=$(read_sig "$WIN_SIG")
+
+          MAC_ARM_NAME=$(basename "$MAC_ARM_TAR")
+          LINUX_NAME=$(basename "$LINUX_APPIMAGE")
+          WIN_NAME=$(basename "$WIN_NSIS")
+
+          BASE_URL="https://github.com/btcjt/titan/releases/download/${GITHUB_REF_NAME}"
+
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "${NOTES}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${MAC_ARM_SIG_CONTENT}",
+                "url": "${BASE_URL}/${MAC_ARM_NAME}"
+              },
+              "linux-x86_64": {
+                "signature": "${LINUX_SIG_CONTENT}",
+                "url": "${BASE_URL}/${LINUX_NAME}"
+              },
+              "windows-x86_64": {
+                "signature": "${WIN_SIG_CONTENT}",
+                "url": "${BASE_URL}/${WIN_NAME}"
+              }
+            }
+          }
+          EOF
+
+          echo "Generated latest.json:"
+          cat latest.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            latest.json
           generate_release_notes: true
           draft: false
         env:

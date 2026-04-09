@@ -8,13 +8,81 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod log_forward;
+mod nip07;
+mod signer;
+
 use serde::{Deserialize, Serialize};
+use signer::Signer;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use titan_resolver::Resolver;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
+
+/// JS injected into every content webview at page-start. Exposes `window.nostr`
+/// (NIP-07) backed by Titan's built-in signer. Requests are routed via the
+/// `titan-nostr://` async protocol handler.
+const WINDOW_NOSTR_INJECTION: &str = r#"
+(function() {
+    if (window.nostr && window.nostr.__titan) return;
+
+    var reqCounter = 0;
+    function nextId() {
+        reqCounter += 1;
+        return 'r' + Date.now() + '_' + reqCounter;
+    }
+
+    async function call(method, params) {
+        var id = nextId();
+        var body = JSON.stringify({ id: id, method: method, params: params || null });
+        var resp;
+        try {
+            resp = await fetch('titan-nostr://rpc', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: body,
+            });
+        } catch (e) {
+            throw new Error('Titan signer unreachable: ' + e);
+        }
+        var data;
+        try {
+            data = await resp.json();
+        } catch (e) {
+            throw new Error('Titan signer returned invalid JSON');
+        }
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        return data.result;
+    }
+
+    window.nostr = {
+        __titan: true,
+        getPublicKey: function() { return call('getPublicKey', null); },
+        signEvent: function(event) { return call('signEvent', event); },
+        getRelays: function() { return call('getRelays', null); },
+        nip04: {
+            encrypt: function(pubkey, plaintext) {
+                return call('nip04.encrypt', { pubkey: pubkey, plaintext: plaintext });
+            },
+            decrypt: function(pubkey, ciphertext) {
+                return call('nip04.decrypt', { pubkey: pubkey, ciphertext: ciphertext });
+            },
+        },
+        nip44: {
+            encrypt: function(pubkey, plaintext) {
+                return call('nip44.encrypt', { pubkey: pubkey, plaintext: plaintext });
+            },
+            decrypt: function(pubkey, ciphertext) {
+                return call('nip44.decrypt', { pubkey: pubkey, ciphertext: ciphertext });
+            },
+        },
+    };
+})();
+"#;
 
 /// A browser tab.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +169,7 @@ struct AppState {
     tabs: std::sync::Mutex<Vec<Tab>>,
     active_tab: std::sync::Mutex<u32>,
     next_tab_id: std::sync::Mutex<u32>,
+    signer: Signer,
 }
 
 impl AppState {
@@ -294,6 +363,68 @@ async fn go_forward(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
 }
 
 #[tauri::command]
+async fn console_eval(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    code: String,
+) -> Result<(), String> {
+    let label = active_webview_label(&state).ok_or("No active tab")?;
+    let wv = app.get_webview(&label).ok_or("Active tab not found")?;
+
+    // Wrap user code in an async IIFE. Send the stringified result back
+    // via titan-cmd://console-result/<level>/<encoded>. We use 'info' for
+    // success and 'error' for thrown exceptions.
+    let code_json = serde_json::to_string(&code).map_err(|e| e.to_string())?;
+    let wrapper = format!(
+        r#"(async function() {{
+    function __send(level, value) {{
+        var text;
+        try {{
+            if (typeof value === 'string') text = value;
+            else if (value === undefined) text = 'undefined';
+            else if (value === null) text = 'null';
+            else text = JSON.stringify(value, null, 2);
+        }} catch (e) {{
+            try {{ text = String(value); }} catch (_) {{ text = '[unserializable]'; }}
+        }}
+        var a = document.createElement('a');
+        a.href = 'titan-cmd://console-result/' + level + '/' + encodeURIComponent(text);
+        a.click();
+    }}
+    try {{
+        var __code = {code};
+        // Build an async function whose body is `return (USER_CODE);`.
+        // If that fails to parse (e.g. the user typed a statement like
+        // `let x = 1`), fall back to using the code as the body directly.
+        var AsyncFunction = Object.getPrototypeOf(async function(){{}}).constructor;
+        var fn;
+        try {{
+            fn = new AsyncFunction('return (' + __code + ');');
+        }} catch (_) {{
+            fn = new AsyncFunction(__code);
+        }}
+        var result = await fn.call(window);
+        __send('info', result);
+    }} catch (err) {{
+        var msg;
+        if (err == null) msg = 'null';
+        else if (typeof err === 'string') msg = err;
+        else if (err.message) msg = (err.name || 'Error') + ': ' + err.message + (err.stack ? '\n' + err.stack : '');
+        else if (err.stack) msg = err.stack;
+        else {{
+            try {{ msg = JSON.stringify(err); }} catch (_) {{ msg = String(err); }}
+        }}
+        __send('error', msg);
+    }}
+}})();"#,
+        code = code_json
+    );
+
+    wv.eval(&wrapper).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn refresh(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     if let Some(label) = active_webview_label(&state) {
         if let Some(wv) = app.get_webview(&label) {
@@ -301,6 +432,274 @@ async fn refresh(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Resu
         }
     }
     Ok(())
+}
+
+// ── Updater Commands ──
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateInfo {
+    available: bool,
+    current_version: String,
+    new_version: Option<String>,
+    notes: Option<String>,
+    date: Option<String>,
+}
+
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    let updater = app
+        .updater()
+        .map_err(|e| format!("updater init failed: {e}"))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("update check failed: {e}"))?;
+
+    match update {
+        Some(u) => Ok(UpdateInfo {
+            available: true,
+            current_version: current,
+            new_version: Some(u.version.clone()),
+            notes: u.body.clone(),
+            date: u.date.map(|d| d.to_string()),
+        }),
+        None => Ok(UpdateInfo {
+            available: false,
+            current_version: current,
+            new_version: None,
+            notes: None,
+            date: None,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app
+        .updater()
+        .map_err(|e| format!("updater init failed: {e}"))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("update check failed: {e}"))?
+        .ok_or("no update available")?;
+
+    info!("downloading update {}", update.version);
+
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| format!("install failed: {e}"))?;
+
+    info!("update installed, restarting");
+    app.restart();
+}
+
+// ── Signer Commands ──
+
+#[derive(Debug, Clone, Serialize)]
+struct SignerStatus {
+    has_identity: bool,
+    unlocked: bool,
+    pubkey: Option<String>,
+}
+
+#[tauri::command]
+async fn signer_status(state: State<'_, Arc<AppState>>) -> Result<SignerStatus, String> {
+    Ok(SignerStatus {
+        has_identity: state.signer.has_identity(),
+        unlocked: state.signer.is_unlocked(),
+        pubkey: state.signer.get_pubkey(),
+    })
+}
+
+#[tauri::command]
+async fn signer_create(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    state.signer.create_new()
+}
+
+#[tauri::command]
+async fn signer_import(
+    state: State<'_, Arc<AppState>>,
+    secret: String,
+) -> Result<String, String> {
+    state.signer.import(&secret)
+}
+
+#[tauri::command]
+async fn signer_unlock(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    state.signer.unlock()
+}
+
+#[tauri::command]
+async fn signer_lock(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.signer.lock();
+    Ok(())
+}
+
+#[tauri::command]
+async fn signer_delete(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.signer.delete()
+}
+
+#[tauri::command]
+async fn signer_reveal_nsec(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    state.signer.reveal_nsec()
+}
+
+// ── Site Info ──
+
+#[derive(Debug, Clone, Serialize, Default)]
+struct ProfileInfo {
+    name: Option<String>,
+    display_name: Option<String>,
+    about: Option<String>,
+    picture: Option<String>,
+    nip05: Option<String>,
+    lud16: Option<String>,
+    website: Option<String>,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RelayEntry {
+    url: String,
+    marker: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SiteInfo {
+    Name {
+        name: String,
+        pubkey: String,
+        npub: String,
+        owner_txid: String,
+        owner_vout: u32,
+        txid: String,
+        block_height: u64,
+        profile: Option<ProfileInfo>,
+        relays: Vec<RelayEntry>,
+    },
+    Npub {
+        pubkey: String,
+        npub: String,
+        profile: Option<ProfileInfo>,
+        relays: Vec<RelayEntry>,
+    },
+    Internal,
+}
+
+async fn fetch_profile_and_relays(
+    resolver: &titan_resolver::Resolver,
+    pubkey: &[u8; 32],
+) -> (Option<ProfileInfo>, Vec<RelayEntry>) {
+    let profile_fut = resolver.fetch_profile(pubkey);
+    let relays_fut = resolver.fetch_relay_list_for_pubkey(pubkey);
+    let (profile_res, relays_res) = tokio::join!(profile_fut, relays_fut);
+
+    let profile = profile_res.ok().flatten().map(|p| ProfileInfo {
+        name: p.name,
+        display_name: p.display_name,
+        about: p.about,
+        picture: p.picture,
+        nip05: p.nip05,
+        lud16: p.lud16,
+        website: p.website,
+        updated_at: p.updated_at,
+    });
+
+    let relays = relays_res
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| RelayEntry {
+            url: r.url,
+            marker: r.marker,
+        })
+        .collect();
+
+    (profile, relays)
+}
+
+#[tauri::command]
+async fn get_site_info(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<SiteInfo, String> {
+    let cleaned = url.trim().replace("nsite://", "");
+    if cleaned.is_empty() || cleaned.starts_with("internal") {
+        return Ok(SiteInfo::Internal);
+    }
+
+    let host = match cleaned.find('/') {
+        Some(i) => &cleaned[..i],
+        None => cleaned.as_str(),
+    };
+
+    let resolver = state.resolver().await?;
+
+    // If it's an npub, decode it directly
+    if host.starts_with("npub1") {
+        let pk = decode_npub(host)?;
+        let pubkey_hex = hex::encode(pk);
+        let (profile, relays) = fetch_profile_and_relays(resolver, &pk).await;
+        return Ok(SiteInfo::Npub {
+            pubkey: pubkey_hex,
+            npub: host.to_string(),
+            profile,
+            relays,
+        });
+    }
+
+    // If it's a hex pubkey
+    if host.len() == 64 && host.chars().all(|c| c.is_ascii_hexdigit()) {
+        use nostr_sdk::prelude::*;
+        let bytes = hex::decode(host).map_err(|e| e.to_string())?;
+        let mut pk_arr = [0u8; 32];
+        pk_arr.copy_from_slice(&bytes);
+        let pk = PublicKey::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let npub = pk.to_bech32().unwrap_or_else(|_| host.to_string());
+        let (profile, relays) = fetch_profile_and_relays(resolver, &pk_arr).await;
+        return Ok(SiteInfo::Npub {
+            pubkey: host.to_lowercase(),
+            npub,
+            profile,
+            relays,
+        });
+    }
+
+    // Otherwise try name lookup
+    let record = resolver
+        .lookup_name_record(host)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match record {
+        Some(r) => {
+            use nostr_sdk::prelude::*;
+            let bytes = hex::decode(&r.pubkey_hex).map_err(|e| e.to_string())?;
+            let mut pk_arr = [0u8; 32];
+            pk_arr.copy_from_slice(&bytes);
+            let pk = PublicKey::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let npub = pk.to_bech32().unwrap_or_else(|_| r.pubkey_hex.clone());
+            let (profile, relays) = fetch_profile_and_relays(resolver, &pk_arr).await;
+            Ok(SiteInfo::Name {
+                name: r.name,
+                pubkey: r.pubkey_hex,
+                npub,
+                owner_txid: r.owner_txid,
+                owner_vout: r.owner_vout,
+                txid: r.txid,
+                block_height: r.block_height,
+                profile,
+                relays,
+            })
+        }
+        None => Err(format!("Name '{host}' not found")),
+    }
 }
 
 // ── Bookmarks ──
@@ -915,6 +1314,7 @@ fn create_tab_webview(
             label,
             tauri::WebviewUrl::External(url.parse()?),
         )
+        .initialization_script(WINDOW_NOSTR_INJECTION)
         .on_navigation(move |url| {
             let scheme = url.scheme();
 
@@ -940,6 +1340,21 @@ fn create_tab_webview(
                             let message = url_decode(parts[2]);
                             let tab = label_nav.clone();
                             let _ = handle.emit("console-message", ConsolePayload {
+                                level,
+                                message,
+                                tab_label: tab,
+                            });
+                        }
+                    }
+                    "console-result" => {
+                        // Eval result from content: titan-cmd://console-result/<level>/<encoded>
+                        let path = url.path();
+                        let parts: Vec<&str> = path.splitn(3, '/').collect();
+                        if parts.len() >= 3 {
+                            let level = parts[1].to_string();
+                            let message = url_decode(parts[2]);
+                            let tab = label_nav.clone();
+                            let _ = handle.emit("console-result", ConsolePayload {
                                 level,
                                 message,
                                 tab_label: tab,
@@ -1052,11 +1467,13 @@ fn create_tab_webview(
 // ── Main ──
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "titan=info".parse().unwrap()),
-        )
+    use tracing_subscriber::prelude::*;
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "titan=info".parse().unwrap());
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(log_forward::ChromeLogLayer)
         .init();
 
     info!("starting Titan browser");
@@ -1083,6 +1500,13 @@ fn main() {
         title: "New Tab".to_string(),
     };
 
+    let signer = Signer::new();
+    info!(
+        "signer: has_identity={}, unlocked={}",
+        signer.has_identity(),
+        signer.is_unlocked()
+    );
+
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
         cache_dir,
@@ -1092,11 +1516,14 @@ fn main() {
         tabs: std::sync::Mutex::new(vec![first_tab]),
         active_tab: std::sync::Mutex::new(0),
         next_tab_id: std::sync::Mutex::new(1),
+        signer,
     });
 
     let protocol_state = state.clone();
+    let state_for_nostr = state.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .register_asynchronous_uri_scheme_protocol("nsite-content", move |_ctx, request, responder| {
             let state = protocol_state.clone();
@@ -1192,14 +1619,70 @@ fn main() {
                 }
             });
         })
+        .register_asynchronous_uri_scheme_protocol("titan-nostr", {
+            let state = state_for_nostr.clone();
+            move |_ctx, request, responder| {
+                let state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let body_bytes = request.body().to_vec();
+
+                    let respond_json = |value: serde_json::Value, status: u16| {
+                        let body = serde_json::to_vec(&value).unwrap_or_default();
+                        tauri::http::Response::builder()
+                            .status(status)
+                            .header("content-type", "application/json")
+                            .header("access-control-allow-origin", "*")
+                            .header("access-control-allow-headers", "content-type")
+                            .header("access-control-allow-methods", "POST, OPTIONS")
+                            .body(body)
+                            .unwrap()
+                    };
+
+                    // OPTIONS preflight
+                    if request.method() == "OPTIONS" {
+                        responder.respond(respond_json(serde_json::json!({}), 204));
+                        return;
+                    }
+
+                    // Parse the request JSON
+                    let req: nip07::NostrRequest = match serde_json::from_slice(&body_bytes) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let err = nip07::NostrResponse {
+                                id: String::new(),
+                                result: None,
+                                error: Some(format!("invalid request: {e}")),
+                            };
+                            let v = serde_json::to_value(&err).unwrap();
+                            responder.respond(respond_json(v, 400));
+                            return;
+                        }
+                    };
+
+                    let response = nip07::dispatch(&state.signer, req).await;
+                    let v = serde_json::to_value(&response).unwrap();
+                    responder.respond(respond_json(v, 200));
+                });
+            }
+        })
         .invoke_handler(tauri::generate_handler![
-            navigate, go_back, go_forward, refresh, resize_content,
+            navigate, go_back, go_forward, refresh, resize_content, console_eval,
             open_console, focus_address_bar, toggle_bookmark_cmd,
             add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked,
             get_settings, update_settings,
             create_tab, close_tab, switch_tab, get_tabs,
+            get_site_info,
+            signer_status, signer_create, signer_import, signer_unlock,
+            signer_lock, signer_delete, signer_reveal_nsec,
+            check_for_update, install_update,
         ])
         .setup(|app| {
+            // Wire up the chrome log forwarder — from now on, tracing events
+            // get emitted to the dev console panel via Tauri events.
+            let handle = app.handle().clone();
+            log_forward::set_app_handle(handle.clone());
+            log_forward::flush_pending(&handle);
+
             let window = app.get_window("main").unwrap();
             let scale = window.scale_factor().unwrap_or(1.0);
             let phys_size = window.inner_size().unwrap();

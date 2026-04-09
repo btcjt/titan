@@ -7,6 +7,13 @@
   <link rel="stylesheet" href="chrome.css">
 </head>
 <body>
+  <!-- Update banner (hidden by default, shown when an update is available) -->
+  <div id="update-banner" style="display:none;">
+    <span id="update-banner-text">Update available</span>
+    <button id="update-banner-install">Install &amp; restart</button>
+    <button id="update-banner-dismiss" title="Dismiss">&times;</button>
+  </div>
+
   <!-- Tab strip (top, drag region) -->
   <div id="tab-strip" data-tauri-drag-region>
     <div id="tab-list" data-tauri-drag-region></div>
@@ -17,6 +24,7 @@
     <button id="btn-back" title="Back" disabled>&#x2190;</button>
     <button id="btn-forward" title="Forward" disabled>&#x2192;</button>
     <button id="btn-refresh" title="Refresh">&#x21BB;</button>
+    <button id="btn-info" data-panel="info" title="Site info">&#x1F512;</button>
     <div id="address-bar-container">
       <span id="scheme-badge">nsite://</span>
       <input
@@ -28,9 +36,10 @@
       >
     </div>
     <button id="btn-star" title="Bookmark (Cmd+D)">&#x2606;</button>
-    <button id="btn-bookmarks" title="Bookmarks">&#x2261;</button>
-    <button id="btn-settings" title="Settings" style="font-size:13px;">&#x2699;</button>
-    <button id="btn-console" title="Console (Cmd+Opt+K)" style="font-size:12px;display:none;">&#x2699;</button>
+    <button id="btn-signer" data-panel="signer" title="Signer (Nostr identity)">&#x1F511;</button>
+    <button id="btn-bookmarks" data-panel="bookmarks" title="Bookmarks">&#x2261;</button>
+    <button id="btn-settings" data-panel="settings" title="Settings" style="font-size:13px;">&#x2699;</button>
+    <button id="btn-console" data-panel="console" title="Console (Cmd+Opt+K)" style="font-size:12px;display:none;">&#x2699;</button>
   </div>
   <div id="loading-bar"></div>
 
@@ -40,6 +49,14 @@
       <span id="panel-title"></span>
     </div>
     <div id="panel-content">
+      <!-- Site info view -->
+      <div id="panel-info" style="display:none;">
+        <div id="info-content"></div>
+      </div>
+      <!-- Signer view -->
+      <div id="panel-signer" style="display:none;">
+        <div id="signer-content"></div>
+      </div>
       <!-- Bookmarks view -->
       <div id="panel-bookmarks" style="display:none;">
         <div id="bookmarks-list"></div>
@@ -48,6 +65,16 @@
       <!-- Dev console view -->
       <div id="panel-console" style="display:none;">
         <div id="console-log"></div>
+        <div id="console-input-wrap">
+          <span id="console-prompt">&gt;</span>
+          <input
+            id="console-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="evaluate JS in active tab (e.g. await window.nostr.getPublicKey())"
+          >
+        </div>
       </div>
       <!-- Settings view -->
       <div id="panel-settings" style="display:none;">
@@ -75,6 +102,11 @@
           <label class="settings-label">Homepage</label>
           <input id="settings-homepage" class="settings-input" type="text" spellcheck="false" placeholder="titan">
           <div class="settings-hint">Default page on startup</div>
+        </div>
+        <div class="settings-section">
+          <label class="settings-label">Updates</label>
+          <div id="settings-update-status" style="font-size:11px;color:var(--text-muted);margin-bottom:6px;"></div>
+          <button id="settings-check-update" class="settings-btn-secondary">Check for updates</button>
         </div>
         <div class="settings-section">
           <button id="settings-save" class="settings-btn">Save</button>

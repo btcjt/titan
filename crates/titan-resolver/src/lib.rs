@@ -151,6 +151,27 @@ impl Resolver {
         }
     }
 
+    /// Look up a Bitcoin name and return the full name record (pubkey, owner UTXO, txid, block).
+    pub async fn lookup_name_record(&self, name: &str) -> Result<Option<relay::NsitNameRecord>, ResolverError> {
+        let indexer_pubkey = PublicKey::from_hex(&self.config.indexer_pubkey)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+        Ok(self.relays.lookup_nsit_name(name, &indexer_pubkey).await?)
+    }
+
+    /// Fetch profile metadata (kind 0) for a pubkey.
+    pub async fn fetch_profile(&self, pubkey: &[u8; 32]) -> Result<Option<relay::ProfileMetadata>, ResolverError> {
+        let pk = PublicKey::from_slice(pubkey)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+        Ok(self.relays.fetch_profile(&pk).await?)
+    }
+
+    /// Fetch the relay list (kind 10002) for a pubkey with read/write markers.
+    pub async fn fetch_relay_list_for_pubkey(&self, pubkey: &[u8; 32]) -> Result<Vec<relay::RelayListEntry>, ResolverError> {
+        let pk = PublicKey::from_slice(pubkey)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+        Ok(self.relays.fetch_relay_list_detailed(&pk).await?)
+    }
+
     /// Resolve a pubkey + path to content bytes.
     ///
     /// `site_name` controls which manifest kind is queried:
