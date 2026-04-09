@@ -52,10 +52,24 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Write updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          # GitHub Secrets may add trailing whitespace/newlines. Strip them
+          # so the base64-encoded minisign key parses cleanly. Write to a
+          # file and use TAURI_SIGNING_PRIVATE_KEY as a path — tauri build
+          # accepts either a literal key or a path to one.
+          KEY_DIR="${RUNNER_TEMP:-/tmp}"
+          KEY_PATH="$KEY_DIR/titan-updater.key"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_SECRET" | tr -d '[:space:]' > "$KEY_PATH"
+          echo "wrote key to $KEY_PATH, $(wc -c < "$KEY_PATH") bytes"
+          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_PATH" >> $GITHUB_ENV
+
       - name: Build Tauri app
         run: cargo tauri build --target ${{ matrix.target }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - name: Upload artifacts
