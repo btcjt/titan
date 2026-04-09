@@ -55,16 +55,19 @@ jobs:
       - name: Write updater signing key
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_HEX: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_HEX }}
         run: |
-          # GitHub Secrets may add trailing whitespace/newlines. Strip them
-          # so the base64-encoded minisign key parses cleanly. Write to a
-          # file and use TAURI_SIGNING_PRIVATE_KEY as a path — tauri build
-          # accepts either a literal key or a path to one.
+          # The signing key is stored hex-encoded to avoid GitHub Secrets
+          # mangling base64 padding. Decode back to the original file here.
           KEY_DIR="${RUNNER_TEMP:-/tmp}"
           KEY_PATH="$KEY_DIR/titan-updater.key"
-          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_SECRET" | tr -d '[:space:]' > "$KEY_PATH"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_HEX" | tr -d '[:space:]' | xxd -r -p > "$KEY_PATH"
           echo "wrote key to $KEY_PATH, $(wc -c < "$KEY_PATH") bytes"
+          # Sanity check: should be 348 bytes of ASCII base64
+          if [ "$(wc -c < "$KEY_PATH")" -ne 348 ]; then
+            echo "ERROR: key file is wrong size (expected 348 bytes)"
+            exit 1
+          fi
           echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_PATH" >> $GITHUB_ENV
 
       - name: Build Tauri app
