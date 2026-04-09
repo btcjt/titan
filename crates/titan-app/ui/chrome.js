@@ -510,6 +510,9 @@ function showSignerModal(prompt, queueCount) {
   }
 
   signerModalBackdrop.style.display = "flex";
+  // Hide the content webview so the modal isn't covered by the native
+  // child webview layer stacked on top of the chrome.
+  invoke("hide_content_webview").catch((e) => log("error", "hide_content_webview: " + e));
   // Focus the approve button so Enter works immediately
   setTimeout(() => document.getElementById("signer-modal-approve").focus(), 0);
 }
@@ -517,6 +520,9 @@ function showSignerModal(prompt, queueCount) {
 function hideSignerModal() {
   signerModalBackdrop.style.display = "none";
   currentPrompt = null;
+  // Restore the content webview to its proper size (same math as
+  // updateContentLayout, which takes the active side panel into account).
+  updateContentLayout().catch((e) => log("error", "updateContentLayout: " + e));
 }
 
 async function resolveSignerPrompt(approved, scopeOverride) {

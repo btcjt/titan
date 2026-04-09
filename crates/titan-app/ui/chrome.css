@@ -989,14 +989,29 @@ body.panel-console #panel-content {
 
 /* ── Dev Console ── */
 
-#panel-console {
-  display: flex;
+/* When the console panel is active, pin the panel to all edges of
+   #panel-content using absolute positioning so it has a guaranteed
+   bounded height regardless of what flex math might be happening in
+   the ancestors. Inside, #console-log flexes to fill and scrolls,
+   and the REPL input stays pinned at the bottom. */
+
+body.panel-console #panel-content {
+  position: relative;
+}
+
+body.panel-console #panel-console {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex !important;
   flex-direction: column;
-  height: 100%;
 }
 
 #console-log {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px;
   font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;

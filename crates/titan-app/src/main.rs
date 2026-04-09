@@ -615,6 +615,46 @@ async fn signer_pending_prompts(
     Ok(state.prompt_queue.snapshot())
 }
 
+/// Hide the active tab's content webview so the chrome can render a
+/// modal on top of it. Content webviews are native views stacked above
+/// the chrome, so CSS z-index can't reach them.
+#[tauri::command]
+async fn hide_content_webview(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(wv) = app.get_webview(&label) {
+            let _ = wv.set_size(tauri::LogicalSize::new(0.0, 0.0));
+        }
+    }
+    Ok(())
+}
+
+/// Restore the active tab's content webview to normal size after a
+/// modal has been dismissed.
+#[tauri::command]
+async fn show_content_webview(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    top: f64,
+    right: f64,
+) -> Result<(), String> {
+    if let Some(label) = active_webview_label(&state) {
+        if let Some(window) = app.get_window("main") {
+            if let Some(wv) = app.get_webview(&label) {
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let phys = window.inner_size().map_err(|e| e.to_string())?;
+                let lw = phys.width as f64 / scale;
+                let lh = phys.height as f64 / scale;
+                let _ = wv.set_position(tauri::LogicalPosition::new(0.0, top));
+                let _ = wv.set_size(tauri::LogicalSize::new(lw - right, lh - top));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn signer_resolve_prompt(
     state: State<'_, Arc<AppState>>,
@@ -1800,6 +1840,7 @@ fn main() {
             signer_lock, signer_delete, signer_reveal_nsec,
             signer_pending_prompts, signer_resolve_prompt,
             signer_list_permissions, signer_revoke_permission, signer_revoke_site,
+            hide_content_webview, show_content_webview,
             check_for_update, install_update,
         ])
         .setup(|app| {
