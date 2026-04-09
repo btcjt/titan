@@ -95,6 +95,8 @@ titan/
 - **Site manifests**: NIP-5A v2 (kind 15128/35128) with v1 fallback
 - **Content storage**: Blossom servers (SHA256-verified blobs)
 - **Name ownership**: Bitcoin UTXO-based (OP_RETURN registration + transfer)
+- **Signer**: Built-in NIP-07 (`window.nostr`) backed by the OS keychain — no external extensions needed
+- **Updater**: Tauri plugin-updater with minisign verification — in-app auto-update
 
 **Related** (in [westernbtc-monorepo](https://github.com/btcjt/westernbtc-monorepo)):
 
@@ -103,7 +105,9 @@ titan/
 
 ## Status
 
-Phases 1–7 complete. `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads as the browser's default homepage. Name lookups via Nostr relays with race-then-linger search. No Bitcoin Core required. See [docs/roadmap.md](docs/roadmap.md).
+Phases 1–9 complete. Phase 10 (built-in signer) is mostly done — key management, `window.nostr` bridge, per-site permission model with approval prompts, permission management UI. Auto-lock, encrypted file fallback, and audit log remain. See [docs/roadmap.md](docs/roadmap.md).
+
+`nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads as the browser's default homepage. Name lookups via Nostr relays with race-then-linger search. No Bitcoin Core required.
 
 ## Building
 

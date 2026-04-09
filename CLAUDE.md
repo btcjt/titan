@@ -23,7 +23,7 @@ crates/
   titan-types/      Core types: TitanName, TitanOp, NsiteUrl, errors
   titan-bitcoin/    OP_RETURN codec, block scanner, tx builder (used by nsit-indexer service)
   titan-resolver/   Nostr relay queries, Blossom blob fetching, disk cache, name lookup
-  titan-app/        Tauri desktop shell + nsite:// protocol handler
+  titan-app/        Tauri desktop shell, signer, permissions, nsite:// + titan-nostr:// protocols
 ```
 
 Related (in westernbtc-monorepo):
@@ -142,6 +142,7 @@ Blossom: https://blossom.westernbtc.com
 7. ~~nsite://titan + Nostr Index~~ (DONE — search/register/transfer/browse, nsit-indexer deployed)
 8. ~~Distribution~~ (DONE — GitHub Actions CI/CD, dmg/AppImage/msi, zapstore)
 9. ~~Tabs, Console, Interactive Registration~~ (DONE — multi-tab, console forwarding, bitcoin-cli builder)
+10. Built-in Signer (IN PROGRESS — key management, window.nostr bridge, permissions + approval prompts done; auto-lock, audit log remaining)
 
 ## Key Decisions Made
 

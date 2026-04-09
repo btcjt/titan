@@ -158,6 +158,229 @@ body {
   100% { background: var(--amber-dim); }
 }
 
+/* ── Signer Approval Modal ── */
+
+#signer-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+#signer-modal {
+  width: min(560px, 90vw);
+  max-height: 86vh;
+  background: var(--bg-secondary);
+  border: 1px solid var(--amber-dim);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.8);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#signer-modal-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#signer-modal-title {
+  color: var(--amber);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-weight: 500;
+}
+
+#signer-modal-queue {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+#signer-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.signer-modal-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.signer-modal-row:last-child {
+  border-bottom: none;
+}
+
+.signer-modal-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.signer-modal-value {
+  color: var(--text-primary);
+  font-size: 13px;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.signer-modal-value.mono {
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.signer-modal-value.small {
+  font-size: 11px;
+}
+
+.signer-modal-pre {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.signer-modal-warning {
+  background: #3a2a1a;
+  border: 1px solid #5a3a1a;
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: #e8b968;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 8px 0;
+}
+
+.signer-modal-details {
+  margin-top: 8px;
+}
+
+.signer-modal-details summary {
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.signer-modal-details summary::-webkit-details-marker { display: none; }
+
+.signer-modal-details summary::before {
+  content: '▸ ';
+  color: var(--text-muted);
+}
+
+.signer-modal-details[open] summary::before {
+  content: '▾ ';
+}
+
+#signer-modal-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.signer-modal-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.signer-modal-scope-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+#signer-modal-scope {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+
+#signer-modal-scope:focus {
+  border-color: var(--border-focus);
+}
+
+.signer-modal-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.signer-modal-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.signer-modal-btn-approve {
+  background: var(--amber-dim);
+  border-color: var(--amber);
+  color: #000;
+  flex: 1.5;
+}
+
+.signer-modal-btn-approve:hover {
+  background: var(--amber);
+}
+
+.signer-modal-btn-deny {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.signer-modal-btn-deny:hover {
+  color: var(--text-primary);
+}
+
+.signer-modal-btn-deny-always {
+  background: var(--bg-tertiary);
+  border-color: #3a2020;
+  color: #c88;
+}
+
+.signer-modal-btn-deny-always:hover {
+  background: #3a2020;
+  color: #e88;
+}
+
 /* ── Update Banner ── */
 
 #update-banner {
@@ -687,6 +910,77 @@ body.panel-console #panel-content {
 
 .signer-actions .signer-btn {
   flex: 1;
+}
+
+/* ── Signer Permissions List ── */
+
+.signer-perm-site {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.signer-perm-site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.signer-perm-site-name {
+  color: var(--amber);
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-weight: 500;
+}
+
+.signer-perm-revoke-all {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.signer-perm-revoke-all:hover {
+  color: #c88;
+}
+
+.signer-perm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.signer-perm-method {
+  flex: 1;
+  color: var(--text-secondary);
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.signer-perm-scope {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.signer-perm-revoke {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.signer-perm-revoke:hover {
+  color: #c44;
 }
 
 /* ── Dev Console ── */

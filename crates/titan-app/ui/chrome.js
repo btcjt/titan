@@ -374,6 +374,189 @@ async function renderSiteInfo() {
   }
 }
 
+// ── Signer Approval Modal ──
+
+const signerModalBackdrop = document.getElementById("signer-modal-backdrop");
+
+// Human-readable labels for sensitive event kinds
+const SENSITIVE_KIND_WARNINGS = {
+  0: "This event updates your profile metadata (kind 0). The site will replace your public profile.",
+  3: "This event updates your contact list (kind 3). The site will replace who you follow.",
+  5: "This is an event deletion request (kind 5). The site wants to delete past events.",
+  10000: "This updates your mute list (kind 10000).",
+  10002: "This updates your relay list (kind 10002). The site will change where your posts are discoverable.",
+  10063: "This updates your Blossom server list (kind 10063).",
+};
+
+const KIND_NAMES = {
+  0: "metadata",
+  1: "short text note",
+  3: "contact list",
+  4: "encrypted direct message (deprecated)",
+  5: "delete",
+  6: "repost",
+  7: "reaction",
+  40: "channel creation",
+  1984: "reporting",
+  9734: "zap request",
+  9735: "zap receipt",
+  10000: "mute list",
+  10002: "relay list",
+  10063: "blossom server list",
+  15128: "nsite root manifest",
+  30023: "long-form content",
+  35128: "nsite named manifest",
+};
+
+let currentPrompt = null; // the request being shown in the modal
+
+async function refreshPendingPrompts() {
+  try {
+    const pending = await invoke("signer_pending_prompts");
+    if (pending.length === 0) {
+      hideSignerModal();
+      return;
+    }
+    // Show the first pending prompt
+    currentPrompt = pending[0];
+    showSignerModal(currentPrompt, pending.length);
+  } catch (err) {
+    log("error", "failed to fetch signer prompts: " + err);
+  }
+}
+
+function showSignerModal(prompt, queueCount) {
+  const siteEl = document.getElementById("signer-modal-site-value");
+  const methodEl = document.getElementById("signer-modal-method-value");
+  const kindRow = document.getElementById("signer-modal-kind-row");
+  const kindEl = document.getElementById("signer-modal-kind-value");
+  const warningEl = document.getElementById("signer-modal-warning");
+  const contentRow = document.getElementById("signer-modal-content-row");
+  const contentEl = document.getElementById("signer-modal-content-value");
+  const tagsRow = document.getElementById("signer-modal-tags-row");
+  const tagsEl = document.getElementById("signer-modal-tags-value");
+  const pubkeyRow = document.getElementById("signer-modal-pubkey-row");
+  const pubkeyEl = document.getElementById("signer-modal-pubkey-value");
+  const rawWrap = document.getElementById("signer-modal-raw-wrap");
+  const rawEl = document.getElementById("signer-modal-raw-value");
+  const queueEl = document.getElementById("signer-modal-queue");
+
+  siteEl.textContent = prompt.site || "unknown";
+  methodEl.textContent = prompt.method;
+
+  // Reset optional rows
+  kindRow.style.display = "none";
+  warningEl.style.display = "none";
+  contentRow.style.display = "none";
+  tagsRow.style.display = "none";
+  pubkeyRow.style.display = "none";
+  rawWrap.style.display = "none";
+
+  if (prompt.method === "signEvent") {
+    const event = prompt.params || {};
+    const kind = typeof event.kind === "number" ? event.kind : null;
+    if (kind !== null) {
+      kindRow.style.display = "block";
+      const name = KIND_NAMES[kind] || "unknown";
+      kindEl.textContent = `${kind} (${name})`;
+      if (SENSITIVE_KIND_WARNINGS[kind]) {
+        warningEl.textContent = SENSITIVE_KIND_WARNINGS[kind];
+        warningEl.style.display = "block";
+      }
+    }
+    if (typeof event.content === "string") {
+      contentRow.style.display = "block";
+      contentEl.textContent = event.content;
+    }
+    if (Array.isArray(event.tags) && event.tags.length > 0) {
+      tagsRow.style.display = "block";
+      tagsEl.textContent = event.tags.map((t) => JSON.stringify(t)).join("\n");
+    }
+    rawWrap.style.display = "block";
+    rawEl.textContent = JSON.stringify(event, null, 2);
+
+    // created_at sanity check
+    if (typeof event.created_at === "number") {
+      const now = Math.floor(Date.now() / 1000);
+      const skew = event.created_at - now;
+      if (Math.abs(skew) > 86400) {
+        const direction = skew > 0 ? "in the future" : "in the past";
+        const days = Math.round(Math.abs(skew) / 86400);
+        warningEl.textContent =
+          (warningEl.textContent ? warningEl.textContent + " " : "") +
+          `This event's created_at is ${days} day(s) ${direction}.`;
+        warningEl.style.display = "block";
+      }
+    }
+  } else if (prompt.method.startsWith("nip04.") || prompt.method.startsWith("nip44.")) {
+    const params = prompt.params || {};
+    if (params.pubkey) {
+      pubkeyRow.style.display = "block";
+      pubkeyEl.textContent = params.pubkey;
+    }
+    rawWrap.style.display = "block";
+    rawEl.textContent = JSON.stringify(params, null, 2);
+    if (prompt.method.startsWith("nip04.")) {
+      warningEl.textContent = "NIP-04 is deprecated. Prefer NIP-44 where possible.";
+      warningEl.style.display = "block";
+    }
+  }
+
+  if (queueCount > 1) {
+    queueEl.style.display = "block";
+    queueEl.textContent = `1 of ${queueCount}`;
+  } else {
+    queueEl.style.display = "none";
+  }
+
+  signerModalBackdrop.style.display = "flex";
+  // Focus the approve button so Enter works immediately
+  setTimeout(() => document.getElementById("signer-modal-approve").focus(), 0);
+}
+
+function hideSignerModal() {
+  signerModalBackdrop.style.display = "none";
+  currentPrompt = null;
+}
+
+async function resolveSignerPrompt(approved, scopeOverride) {
+  if (!currentPrompt) return;
+  const scope = scopeOverride || document.getElementById("signer-modal-scope").value;
+  const id = currentPrompt.id;
+  try {
+    await invoke("signer_resolve_prompt", {
+      resolution: { id, approved, scope },
+    });
+    log("info", `signer: ${approved ? "approved" : "denied"} ${currentPrompt.method} for ${currentPrompt.site}`);
+  } catch (err) {
+    log("error", "failed to resolve prompt: " + err);
+  }
+  // Check for more pending prompts
+  await refreshPendingPrompts();
+}
+
+document.getElementById("signer-modal-approve").addEventListener("click", () => resolveSignerPrompt(true));
+document.getElementById("signer-modal-deny").addEventListener("click", () => resolveSignerPrompt(false, "allow_once"));
+document.getElementById("signer-modal-deny-always").addEventListener("click", () => resolveSignerPrompt(false, "deny_always"));
+
+// Keyboard shortcuts inside the modal
+document.addEventListener("keydown", (e) => {
+  if (signerModalBackdrop.style.display !== "flex") return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    resolveSignerPrompt(true);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    resolveSignerPrompt(false, "allow_once");
+  }
+}, true); // capture phase so it runs before other handlers
+
+listen("signer-prompt", () => {
+  refreshPendingPrompts();
+});
+
 // ── Updater ──
 
 let pendingUpdate = null;
@@ -550,9 +733,6 @@ function renderSignerLocked() {
 }
 
 function renderSignerUnlocked(pubkeyHex) {
-  // Derive npub client-side for display (simple — Rust already has it but we
-  // can't easily pass both without another call; just show pubkey hex + offer
-  // a "copy npub" button that fetches it)
   signerContent.innerHTML = `
     <div class="info-section">
       <div class="info-label">Active identity</div>
@@ -574,6 +754,10 @@ function renderSignerUnlocked(pubkeyHex) {
         Anyone with this key can impersonate you. Back it up offline and never share it.
       </div>
       <button class="signer-btn signer-btn-secondary" id="btn-signer-reveal-close" style="margin-top:8px;">Hide</button>
+    </div>
+    <div class="info-section">
+      <div class="info-label">Site permissions</div>
+      <div id="signer-permissions-list" style="margin-top:6px;"></div>
     </div>
   `;
 
@@ -620,6 +804,79 @@ function renderSignerUnlocked(pubkeyHex) {
       alert("Failed to delete: " + err);
     }
   });
+
+  // Load and render stored site permissions
+  renderSignerPermissions();
+}
+
+async function renderSignerPermissions() {
+  const listEl = document.getElementById("signer-permissions-list");
+  if (!listEl) return;
+  try {
+    const perms = await invoke("signer_list_permissions");
+    if (perms.length === 0) {
+      listEl.innerHTML = `<div class="info-value small" style="color:var(--text-muted);">No sites have stored permissions yet.</div>`;
+      return;
+    }
+
+    // Group by site
+    const bySite = {};
+    for (const p of perms) {
+      if (!bySite[p.site]) bySite[p.site] = [];
+      bySite[p.site].push(p);
+    }
+
+    const html = Object.entries(bySite).map(([site, methods]) => {
+      const items = methods.map((p) => {
+        const scopeLabel = p.scope === "allow_always" ? "always allow" : "always deny";
+        const scopeColor = p.scope === "allow_always" ? "var(--amber)" : "#c88";
+        return `<div class="signer-perm-item">
+          <div class="signer-perm-method">${escapeHtml(p.method)}</div>
+          <div class="signer-perm-scope" style="color:${scopeColor};">${scopeLabel}</div>
+          <button class="signer-perm-revoke" data-site="${escapeAttr(p.site)}" data-method="${escapeAttr(p.method)}" title="Revoke">&times;</button>
+        </div>`;
+      }).join("");
+      return `<div class="signer-perm-site">
+        <div class="signer-perm-site-header">
+          <span class="signer-perm-site-name">${escapeHtml(site)}</span>
+          <button class="signer-perm-revoke-all" data-site="${escapeAttr(site)}" title="Revoke all for this site">revoke all</button>
+        </div>
+        ${items}
+      </div>`;
+    }).join("");
+
+    listEl.innerHTML = html;
+
+    listEl.querySelectorAll(".signer-perm-revoke").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await invoke("signer_revoke_permission", {
+            site: btn.dataset.site,
+            method: btn.dataset.method,
+          });
+          log("info", `revoked ${btn.dataset.method} for ${btn.dataset.site}`);
+          renderSignerPermissions();
+        } catch (err) {
+          alert("Failed to revoke: " + err);
+        }
+      });
+    });
+
+    listEl.querySelectorAll(".signer-perm-revoke-all").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Revoke all permissions for ${btn.dataset.site}?`)) return;
+        try {
+          await invoke("signer_revoke_site", { site: btn.dataset.site });
+          log("info", `revoked all permissions for ${btn.dataset.site}`);
+          renderSignerPermissions();
+        } catch (err) {
+          alert("Failed to revoke: " + err);
+        }
+      });
+    });
+  } catch (err) {
+    listEl.innerHTML = `<div class="info-value small" style="color:#c66;">${escapeHtml(String(err))}</div>`;
+  }
 }
 
 // ── Generic Panel System ──

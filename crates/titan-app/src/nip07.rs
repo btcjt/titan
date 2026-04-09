@@ -5,11 +5,15 @@
 //! error string). The caller is responsible for delivering the response back
 //! to the content webview.
 
+use crate::permissions::{is_sensitive, Decision, Permissions};
+use crate::prompt_queue::PromptQueue;
 use crate::signer::Signer;
 use nostr_sdk::nips::{nip04, nip44};
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
+use tokio::time::{timeout, Duration};
 
 /// Incoming request from a content page.
 #[derive(Debug, Deserialize)]
@@ -47,26 +51,102 @@ impl NostrResponse {
     }
 }
 
-/// Dispatch a NIP-07 request against the signer.
+/// Timeout for approval prompts — if the user doesn't respond within
+/// this window, the dispatch returns a denial to the content page.
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Context bundle passed through to dispatch — everything it needs to
+/// enforce permissions and emit approval prompts.
+pub struct DispatchContext<'a> {
+    pub signer: &'a Signer,
+    pub permissions: &'a Permissions,
+    pub queue: &'a PromptQueue,
+    pub app: &'a AppHandle,
+    /// The site origin (nsite name or npub) that made this request.
+    pub site: String,
+}
+
+/// Dispatch a NIP-07 request against the signer with permission checking.
 ///
-/// Future phases will consult the permission model and approval prompts
-/// before executing sensitive methods. For now, unlocked == allowed.
-pub async fn dispatch(signer: &Signer, req: NostrRequest) -> NostrResponse {
-    if !signer.is_unlocked() {
-        if !signer.has_identity() {
+/// Non-sensitive methods (getPublicKey, getRelays) execute immediately
+/// once the signer is unlocked. Sensitive methods (signEvent, nip04/nip44
+/// encrypt/decrypt) go through the permission model:
+///
+/// 1. Check stored permissions. AllowAlways/AllowSession → execute.
+/// 2. DenyAlways → return error.
+/// 3. No stored decision → push onto prompt queue, emit signer-prompt
+///    event, await user's response via oneshot (with 60s timeout).
+pub async fn dispatch(ctx: DispatchContext<'_>, req: NostrRequest) -> NostrResponse {
+    if !ctx.signer.is_unlocked() {
+        if !ctx.signer.has_identity() {
             return NostrResponse::err(&req.id, "No Nostr identity configured in Titan");
         }
         return NostrResponse::err(&req.id, "Titan signer is locked");
     }
 
+    // Permission check (sensitive methods only)
+    if is_sensitive(&req.method) {
+        let decision = ctx.permissions.check(&ctx.site, &req.method);
+        match decision {
+            Decision::Allow => {
+                // proceed to execute below
+            }
+            Decision::Deny => {
+                return NostrResponse::err(&req.id, "Request denied by stored permission");
+            }
+            Decision::NeedApproval => {
+                // Push onto queue, emit event, await response
+                let rx = ctx.queue.push(
+                    req.id.clone(),
+                    ctx.site.clone(),
+                    req.method.clone(),
+                    req.params.clone(),
+                );
+                // Emit a snapshot of all pending prompts so the chrome can
+                // render or update its queue.
+                let snapshot = ctx.queue.snapshot();
+                let _ = ctx.app.emit("signer-prompt", snapshot);
+
+                let outcome = match timeout(PROMPT_TIMEOUT, rx).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => {
+                        return NostrResponse::err(
+                            &req.id,
+                            "Signer prompt channel closed unexpectedly",
+                        );
+                    }
+                    Err(_) => {
+                        // Timeout — remove from queue and deny
+                        let _ = ctx.queue.resolve(crate::prompt_queue::PromptResolution {
+                            id: req.id.clone(),
+                            approved: false,
+                            scope: crate::permissions::Scope::AllowOnce,
+                        });
+                        return NostrResponse::err(
+                            &req.id,
+                            "Approval prompt timed out after 60 seconds",
+                        );
+                    }
+                };
+
+                if !outcome.approved {
+                    return NostrResponse::err(&req.id, "Request denied by user");
+                }
+
+                // Record the chosen scope for future requests
+                ctx.permissions.record(&ctx.site, &req.method, outcome.scope);
+            }
+        }
+    }
+
     match req.method.as_str() {
-        "getPublicKey" => dispatch_get_public_key(signer, &req),
-        "signEvent" => dispatch_sign_event(signer, &req),
-        "getRelays" => dispatch_get_relays(signer, &req),
-        "nip04.encrypt" => dispatch_nip04_encrypt(signer, &req),
-        "nip04.decrypt" => dispatch_nip04_decrypt(signer, &req),
-        "nip44.encrypt" => dispatch_nip44_encrypt(signer, &req),
-        "nip44.decrypt" => dispatch_nip44_decrypt(signer, &req),
+        "getPublicKey" => dispatch_get_public_key(ctx.signer, &req),
+        "signEvent" => dispatch_sign_event(ctx.signer, &req),
+        "getRelays" => dispatch_get_relays(ctx.signer, &req),
+        "nip04.encrypt" => dispatch_nip04_encrypt(ctx.signer, &req),
+        "nip04.decrypt" => dispatch_nip04_decrypt(ctx.signer, &req),
+        "nip44.encrypt" => dispatch_nip44_encrypt(ctx.signer, &req),
+        "nip44.decrypt" => dispatch_nip44_decrypt(ctx.signer, &req),
         other => NostrResponse::err(&req.id, format!("Unknown method: {other}")),
     }
 }

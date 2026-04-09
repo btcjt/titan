@@ -7,6 +7,62 @@
   <link rel="stylesheet" href="chrome.css">
 </head>
 <body>
+  <!-- Signer approval modal (hidden by default) -->
+  <div id="signer-modal-backdrop" style="display:none;">
+    <div id="signer-modal">
+      <div id="signer-modal-header">
+        <div id="signer-modal-title">Approval required</div>
+        <div id="signer-modal-queue" style="display:none;"></div>
+      </div>
+      <div id="signer-modal-body">
+        <div id="signer-modal-site" class="signer-modal-row">
+          <div class="signer-modal-label">Site</div>
+          <div class="signer-modal-value" id="signer-modal-site-value"></div>
+        </div>
+        <div class="signer-modal-row">
+          <div class="signer-modal-label">Method</div>
+          <div class="signer-modal-value" id="signer-modal-method-value"></div>
+        </div>
+        <div id="signer-modal-kind-row" class="signer-modal-row" style="display:none;">
+          <div class="signer-modal-label">Kind</div>
+          <div class="signer-modal-value" id="signer-modal-kind-value"></div>
+        </div>
+        <div id="signer-modal-warning" class="signer-modal-warning" style="display:none;"></div>
+        <div id="signer-modal-content-row" class="signer-modal-row" style="display:none;">
+          <div class="signer-modal-label">Content</div>
+          <pre class="signer-modal-pre" id="signer-modal-content-value"></pre>
+        </div>
+        <div id="signer-modal-tags-row" class="signer-modal-row" style="display:none;">
+          <div class="signer-modal-label">Tags</div>
+          <pre class="signer-modal-pre" id="signer-modal-tags-value"></pre>
+        </div>
+        <div id="signer-modal-pubkey-row" class="signer-modal-row" style="display:none;">
+          <div class="signer-modal-label">Counter-party</div>
+          <div class="signer-modal-value mono small" id="signer-modal-pubkey-value"></div>
+        </div>
+        <details class="signer-modal-details" id="signer-modal-raw-wrap" style="display:none;">
+          <summary>Raw request</summary>
+          <pre class="signer-modal-pre" id="signer-modal-raw-value"></pre>
+        </details>
+      </div>
+      <div id="signer-modal-footer">
+        <div class="signer-modal-scope-row">
+          <label class="signer-modal-scope-label">Scope:</label>
+          <select id="signer-modal-scope">
+            <option value="allow_once" selected>Allow once</option>
+            <option value="allow_session">Allow for session</option>
+            <option value="allow_always">Always allow</option>
+          </select>
+        </div>
+        <div class="signer-modal-actions">
+          <button id="signer-modal-deny" class="signer-modal-btn signer-modal-btn-deny">Deny</button>
+          <button id="signer-modal-deny-always" class="signer-modal-btn signer-modal-btn-deny-always">Deny always</button>
+          <button id="signer-modal-approve" class="signer-modal-btn signer-modal-btn-approve">Approve</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Update banner (hidden by default, shown when an update is available) -->
   <div id="update-banner" style="display:none;">
     <span id="update-banner-text">Update available</span>

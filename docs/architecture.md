@@ -306,6 +306,72 @@ nsit-indexer → verifies UTXO spend → publishes updated kind 35129
 | Blobs | Forever | Content-addressed (SHA256), immutable |
 | Blossom server list (kind 10063) | 1 hour | Rarely changes |
 
+## Built-in Signer (NIP-07)
+
+Titan ships with a built-in Nostr signer so every nsite gets a working
+`window.nostr` with no external extensions.
+
+### Components
+
+- **`signer.rs`** — `Signer` with `NotConfigured` / `Locked` / `Unlocked`
+  states. Storage backed by the OS keychain (`keyring` crate). The nsec
+  never leaves the Rust process.
+- **`nip07.rs`** — NIP-07 method dispatcher. Handles `getPublicKey`,
+  `signEvent`, `getRelays`, `nip04.encrypt`/`decrypt`,
+  `nip44.encrypt`/`decrypt`. Events are signed with nostr-sdk's
+  `EventBuilder` and self-verified before return.
+- **`permissions.rs`** — Per-site, per-method approval storage.
+  Scopes: `AllowOnce`, `AllowSession`, `AllowAlways`, `DenyAlways`.
+  `AllowAlways`/`DenyAlways` persist to `data_dir/permissions.json`.
+  Session scope is cleared on lock.
+- **`prompt_queue.rs`** — Pending approval request queue with
+  `tokio::sync::oneshot` channels. The dispatcher pushes a request,
+  awaits the response (or a 60s timeout), and the chrome resolves it
+  through a Tauri command.
+
+### Request flow
+
+```
+content page
+  window.nostr.signEvent({...})
+       │
+       ▼ (fetch)
+  titan-nostr://rpc   [Tauri async protocol handler]
+       │
+       ▼
+  UriSchemeContext gives us the source webview label
+       │
+       ▼
+  look up that tab's display_url → "site" = first path segment
+       │
+       ▼
+  nip07::dispatch(signer, permissions, queue, app, site, request)
+       │
+       ├─ signer locked? → return error
+       ├─ method non-sensitive? → execute immediately
+       ├─ permissions.check(site, method) → Allow → execute
+       ├─ permissions.check → Deny → return error
+       └─ permissions.check → NeedApproval →
+            queue.push(request) → emit "signer-prompt"
+            await response (60s timeout)
+            chrome shows modal, user picks approve/deny + scope
+            chrome calls signer_resolve_prompt(id, approved, scope)
+            permissions.record(site, method, scope) if approved
+            execute (if approved) or return error (if denied)
+```
+
+The site origin is derived from our own tab state, **not** from anything
+the content page could self-report. A site cannot spoof another site's
+permissions.
+
+### window.nostr injection
+
+Injected into every content webview via `initialization_script` so
+`window.nostr` is available synchronously before any page scripts run.
+Calls `fetch('titan-nostr://rpc', { method: 'POST', body: JSON })` and
+awaits the response. The response is a `{id, result}` or `{id, error}`
+JSON object.
+
 ## Infrastructure
 
 ### k8s Cluster

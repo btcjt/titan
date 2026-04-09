@@ -10,8 +10,12 @@
 
 mod log_forward;
 mod nip07;
+mod permissions;
+mod prompt_queue;
 mod signer;
 
+use permissions::Permissions;
+use prompt_queue::PromptQueue;
 use serde::{Deserialize, Serialize};
 use signer::Signer;
 use std::path::PathBuf;
@@ -170,6 +174,8 @@ struct AppState {
     active_tab: std::sync::Mutex<u32>,
     next_tab_id: std::sync::Mutex<u32>,
     signer: Signer,
+    permissions: Permissions,
+    prompt_queue: PromptQueue,
 }
 
 impl AppState {
@@ -197,6 +203,23 @@ fn active_webview_label(state: &AppState) -> Option<String> {
     let active = *state.active_tab.lock().unwrap();
     let tabs = state.tabs.lock().unwrap();
     tabs.iter().find(|t| t.id == active).map(|t| t.label.clone())
+}
+
+/// Extract the "site origin" for a tab — the first path segment of its
+/// display URL (e.g. "titan" or "npub1..."). Used as the permission key
+/// so different paths on the same site share permissions.
+fn tab_site_for_label(state: &AppState, webview_label: &str) -> Option<String> {
+    let tabs = state.tabs.lock().unwrap();
+    let tab = tabs.iter().find(|t| t.label == webview_label)?;
+    let url = &tab.display_url;
+    if url.is_empty() {
+        return None;
+    }
+    let host = match url.find('/') {
+        Some(i) => &url[..i],
+        None => url.as_str(),
+    };
+    Some(host.to_string())
 }
 
 /// Parsed nsite host — pubkey + optional site name.
@@ -537,6 +560,8 @@ async fn signer_unlock(state: State<'_, Arc<AppState>>) -> Result<String, String
 #[tauri::command]
 async fn signer_lock(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.signer.lock();
+    state.permissions.clear_session();
+    state.prompt_queue.deny_all();
     Ok(())
 }
 
@@ -548,6 +573,54 @@ async fn signer_delete(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 #[tauri::command]
 async fn signer_reveal_nsec(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     state.signer.reveal_nsec()
+}
+
+// ── Permission & Prompt Commands ──
+
+#[tauri::command]
+async fn signer_pending_prompts(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<prompt_queue::PendingRequestSnapshot>, String> {
+    Ok(state.prompt_queue.snapshot())
+}
+
+#[tauri::command]
+async fn signer_resolve_prompt(
+    state: State<'_, Arc<AppState>>,
+    resolution: prompt_queue::PromptResolution,
+) -> Result<(), String> {
+    let ok = state.prompt_queue.resolve(resolution);
+    if ok {
+        Ok(())
+    } else {
+        Err("No pending prompt with that id".to_string())
+    }
+}
+
+#[tauri::command]
+async fn signer_list_permissions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<permissions::Permission>, String> {
+    Ok(state.permissions.list_persisted())
+}
+
+#[tauri::command]
+async fn signer_revoke_permission(
+    state: State<'_, Arc<AppState>>,
+    site: String,
+    method: String,
+) -> Result<(), String> {
+    state.permissions.revoke(&site, &method);
+    Ok(())
+}
+
+#[tauri::command]
+async fn signer_revoke_site(
+    state: State<'_, Arc<AppState>>,
+    site: String,
+) -> Result<(), String> {
+    state.permissions.revoke_site(&site);
+    Ok(())
 }
 
 // ── Site Info ──
@@ -1507,6 +1580,8 @@ fn main() {
         signer.is_unlocked()
     );
 
+    let permissions = Permissions::load(data_dir.clone());
+
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
         cache_dir,
@@ -1517,6 +1592,8 @@ fn main() {
         active_tab: std::sync::Mutex::new(0),
         next_tab_id: std::sync::Mutex::new(1),
         signer,
+        permissions,
+        prompt_queue: PromptQueue::new(),
     });
 
     let protocol_state = state.clone();
@@ -1621,8 +1698,10 @@ fn main() {
         })
         .register_asynchronous_uri_scheme_protocol("titan-nostr", {
             let state = state_for_nostr.clone();
-            move |_ctx, request, responder| {
+            move |ctx, request, responder| {
                 let state = state.clone();
+                let app = ctx.app_handle().clone();
+                let webview_label = ctx.webview_label().to_string();
                 tauri::async_runtime::spawn(async move {
                     let body_bytes = request.body().to_vec();
 
@@ -1659,7 +1738,21 @@ fn main() {
                         }
                     };
 
-                    let response = nip07::dispatch(&state.signer, req).await;
+                    // Look up the site origin from the tab that made this
+                    // request. We trust our own state over anything the
+                    // content page could send, which prevents a site from
+                    // spoofing another site's permissions.
+                    let site = tab_site_for_label(&state, &webview_label)
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    let dispatch_ctx = nip07::DispatchContext {
+                        signer: &state.signer,
+                        permissions: &state.permissions,
+                        queue: &state.prompt_queue,
+                        app: &app,
+                        site,
+                    };
+                    let response = nip07::dispatch(dispatch_ctx, req).await;
                     let v = serde_json::to_value(&response).unwrap();
                     responder.respond(respond_json(v, 200));
                 });
@@ -1674,6 +1767,8 @@ fn main() {
             get_site_info,
             signer_status, signer_create, signer_import, signer_unlock,
             signer_lock, signer_delete, signer_reveal_nsec,
+            signer_pending_prompts, signer_resolve_prompt,
+            signer_list_permissions, signer_revoke_permission, signer_revoke_site,
             check_for_update, install_update,
         ])
         .setup(|app| {
