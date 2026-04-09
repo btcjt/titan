@@ -501,23 +501,54 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
-    let updater = app
-        .updater()
-        .map_err(|e| format!("updater init failed: {e}"))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| format!("update check failed: {e}"))?
-        .ok_or("no update available")?;
+    info!("install_update: command entered");
 
-    info!("downloading update {}", update.version);
+    let updater = app.updater().map_err(|e| {
+        let msg = format!("updater init failed: {e}");
+        warn!("install_update: {msg}");
+        msg
+    })?;
+    info!("install_update: updater initialized");
+
+    let update_opt = updater.check().await.map_err(|e| {
+        let msg = format!("update check failed: {e}");
+        warn!("install_update: {msg}");
+        msg
+    })?;
+    info!("install_update: check complete, update_present={}", update_opt.is_some());
+
+    let update = update_opt.ok_or_else(|| {
+        let msg = "no update available".to_string();
+        warn!("install_update: {msg}");
+        msg
+    })?;
+
+    info!("install_update: downloading update {}", update.version);
+
+    let total_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let total_bytes_cb = total_bytes.clone();
 
     update
-        .download_and_install(|_chunk, _total| {}, || {})
+        .download_and_install(
+            move |chunk, total| {
+                let t = total.unwrap_or(0);
+                total_bytes_cb.fetch_add(chunk as u64, std::sync::atomic::Ordering::Relaxed);
+                if chunk > 0 {
+                    debug!("install_update: downloaded {} / {}", total_bytes_cb.load(std::sync::atomic::Ordering::Relaxed), t);
+                }
+            },
+            || {
+                info!("install_update: download complete, installing");
+            },
+        )
         .await
-        .map_err(|e| format!("install failed: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("install failed: {e}");
+            warn!("install_update: {msg}");
+            msg
+        })?;
 
-    info!("update installed, restarting");
+    info!("install_update: install complete, restarting");
     app.restart();
 }
 

@@ -607,15 +607,18 @@ function hideUpdateBanner() {
 }
 
 async function installPendingUpdate() {
-  if (!pendingUpdate) return;
-  if (!confirm(`Install Titan ${pendingUpdate.new_version}?\n\nTitan will restart after the update is downloaded.`)) return;
-  log("info", "downloading and installing update...");
+  log("info", "install button clicked");
+  if (!pendingUpdate) {
+    log("warn", "installPendingUpdate: no pendingUpdate in JS state");
+    return;
+  }
+  log("info", `installing Titan ${pendingUpdate.new_version}...`);
   try {
     await invoke("install_update");
+    log("info", "install_update returned normally (restart should have happened)");
   } catch (err) {
     const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
     log("error", "install failed: " + msg);
-    alert("Update install failed: " + msg);
   }
 }
 

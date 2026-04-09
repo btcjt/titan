@@ -553,6 +553,10 @@ body.panel-open #tab-strip {
   margin-right: var(--panel-width);
 }
 
+body.panel-open #update-banner {
+  margin-right: var(--panel-width);
+}
+
 /* Star button */
 #btn-star.bookmarked {
   color: var(--amber);
