@@ -17,6 +17,50 @@ use serde_json::Value;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 
+/// Per-site cap on outstanding pending prompts.
+///
+/// Protects against memory-exhaustion DoS from a hostile nsite that fires
+/// `signEvent` (or any sensitive method) in a loop while the user is AFK.
+/// Each pending request holds a cloned `Value` of the raw params — without
+/// a cap, a site calling `signEvent` with a 1 MB `content` field in a loop
+/// could grow the queue unbounded before the 60s timeout reaps any entries.
+///
+/// 16 is a generous ceiling for any legitimate UI — real sites should
+/// never have more than a handful of prompts in flight at once.
+pub const MAX_PENDING_PER_SITE: usize = 16;
+
+/// Global cap on outstanding pending prompts across all sites.
+///
+/// A second line of defense if somehow many sites each reach their
+/// per-site cap. 128 is plenty for normal browsing.
+pub const MAX_PENDING_TOTAL: usize = 128;
+
+/// Error returned when the queue refuses a new prompt due to caps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushError {
+    /// The calling site already has `MAX_PENDING_PER_SITE` prompts waiting.
+    PerSiteLimitExceeded,
+    /// The global queue already has `MAX_PENDING_TOTAL` prompts waiting.
+    GlobalLimitExceeded,
+}
+
+impl std::fmt::Display for PushError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PushError::PerSiteLimitExceeded => write!(
+                f,
+                "Too many pending approval prompts for this site (max {})",
+                MAX_PENDING_PER_SITE
+            ),
+            PushError::GlobalLimitExceeded => write!(
+                f,
+                "Too many pending approval prompts across all sites (max {})",
+                MAX_PENDING_TOTAL
+            ),
+        }
+    }
+}
+
 /// Represents a single pending approval request.
 pub struct PendingRequest {
     pub id: String,
@@ -63,14 +107,32 @@ impl PromptQueue {
     }
 
     /// Push a new pending request. Returns the receiver the dispatcher
-    /// should await.
+    /// should await, or a `PushError` if queue caps would be exceeded.
+    ///
+    /// The caller is responsible for emitting the `signer-prompt` event
+    /// after a successful push.
     pub fn push(
         &self,
         id: String,
         site: String,
         method: String,
         params: Value,
-    ) -> oneshot::Receiver<PromptResult> {
+    ) -> Result<oneshot::Receiver<PromptResult>, PushError> {
+        let mut guard = self.pending.lock().unwrap();
+
+        // Global cap first — prevents the per-site count check from
+        // masking a runaway situation where many sites each fill up.
+        if guard.len() >= MAX_PENDING_TOTAL {
+            return Err(PushError::GlobalLimitExceeded);
+        }
+
+        // Per-site cap — the primary DoS defense. Count how many pending
+        // entries the calling site already has in flight.
+        let site_count = guard.iter().filter(|r| r.site == site).count();
+        if site_count >= MAX_PENDING_PER_SITE {
+            return Err(PushError::PerSiteLimitExceeded);
+        }
+
         let (tx, rx) = oneshot::channel();
         let req = PendingRequest {
             id,
@@ -79,8 +141,8 @@ impl PromptQueue {
             params,
             responder: tx,
         };
-        self.pending.lock().unwrap().push(req);
-        rx
+        guard.push(req);
+        Ok(rx)
     }
 
     /// Snapshot of all pending requests for the UI.
@@ -137,12 +199,14 @@ mod tests {
     #[tokio::test]
     async fn push_and_resolve_roundtrip() {
         let queue = PromptQueue::new();
-        let rx = queue.push(
-            "req-1".to_string(),
-            "titan".to_string(),
-            "signEvent".to_string(),
-            json!({"kind": 1, "content": "hi"}),
-        );
+        let rx = queue
+            .push(
+                "req-1".to_string(),
+                "titan".to_string(),
+                "signEvent".to_string(),
+                json!({"kind": 1, "content": "hi"}),
+            )
+            .unwrap();
 
         // Snapshot reflects the pending request
         let snapshot = queue.snapshot();
@@ -178,18 +242,22 @@ mod tests {
     #[tokio::test]
     async fn deny_all_rejects_outstanding_requests() {
         let queue = PromptQueue::new();
-        let rx1 = queue.push(
-            "a".to_string(),
-            "site1".to_string(),
-            "signEvent".to_string(),
-            json!({}),
-        );
-        let rx2 = queue.push(
-            "b".to_string(),
-            "site2".to_string(),
-            "nip44.encrypt".to_string(),
-            json!({}),
-        );
+        let rx1 = queue
+            .push(
+                "a".to_string(),
+                "site1".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .unwrap();
+        let rx2 = queue
+            .push(
+                "b".to_string(),
+                "site2".to_string(),
+                "nip44.encrypt".to_string(),
+                json!({}),
+            )
+            .unwrap();
 
         queue.deny_all();
 
@@ -203,22 +271,150 @@ mod tests {
     #[tokio::test]
     async fn multiple_pending_preserves_order() {
         let queue = PromptQueue::new();
-        let _rx1 = queue.push(
-            "a".to_string(),
-            "x".to_string(),
-            "signEvent".to_string(),
-            json!({}),
-        );
-        let _rx2 = queue.push(
-            "b".to_string(),
-            "x".to_string(),
-            "signEvent".to_string(),
-            json!({}),
-        );
+        let _rx1 = queue
+            .push(
+                "a".to_string(),
+                "x".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .unwrap();
+        let _rx2 = queue
+            .push(
+                "b".to_string(),
+                "x".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .unwrap();
 
         let snap = queue.snapshot();
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].id, "a");
         assert_eq!(snap[1].id, "b");
+    }
+
+    #[tokio::test]
+    async fn per_site_cap_blocks_excess_prompts() {
+        let queue = PromptQueue::new();
+        // Fill the per-site quota for "attacker"
+        let mut receivers = Vec::new();
+        for i in 0..MAX_PENDING_PER_SITE {
+            let rx = queue
+                .push(
+                    format!("req-{i}"),
+                    "attacker".to_string(),
+                    "signEvent".to_string(),
+                    json!({"kind": 1, "content": "x"}),
+                )
+                .unwrap();
+            receivers.push(rx);
+        }
+
+        // The next push for the same site must fail with PerSiteLimitExceeded
+        let err = queue
+            .push(
+                "overflow".to_string(),
+                "attacker".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .unwrap_err();
+        assert_eq!(err, PushError::PerSiteLimitExceeded);
+
+        // A different site is still allowed
+        assert!(queue
+            .push(
+                "other-1".to_string(),
+                "honest-site".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn per_site_cap_recovers_after_resolve() {
+        let queue = PromptQueue::new();
+        // Fill to exactly the cap
+        for i in 0..MAX_PENDING_PER_SITE {
+            queue
+                .push(
+                    format!("req-{i}"),
+                    "site".to_string(),
+                    "signEvent".to_string(),
+                    json!({}),
+                )
+                .unwrap();
+        }
+        // Overflow is blocked
+        assert!(queue
+            .push(
+                "overflow".to_string(),
+                "site".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .is_err());
+
+        // Resolve one — a slot frees up
+        assert!(queue.resolve(PromptResolution {
+            id: "req-0".to_string(),
+            approved: true,
+            scope: Scope::AllowOnce,
+        }));
+
+        // Now a new push succeeds
+        assert!(queue
+            .push(
+                "req-new".to_string(),
+                "site".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn global_cap_blocks_many_sites() {
+        let queue = PromptQueue::new();
+        // Spread MAX_PENDING_TOTAL across many sites, each under the
+        // per-site cap. Needs at least MAX_PENDING_TOTAL / MAX_PENDING_PER_SITE
+        // sites = 128 / 16 = 8 sites each with 16 prompts.
+        let sites_needed = MAX_PENDING_TOTAL / MAX_PENDING_PER_SITE;
+        for site_idx in 0..sites_needed {
+            for req_idx in 0..MAX_PENDING_PER_SITE {
+                queue
+                    .push(
+                        format!("s{site_idx}-r{req_idx}"),
+                        format!("site-{site_idx}"),
+                        "signEvent".to_string(),
+                        json!({}),
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(queue.snapshot().len(), MAX_PENDING_TOTAL);
+
+        // A new site (zero pending) still hits the global cap
+        let err = queue
+            .push(
+                "fresh".to_string(),
+                "new-site".to_string(),
+                "signEvent".to_string(),
+                json!({}),
+            )
+            .unwrap_err();
+        assert_eq!(err, PushError::GlobalLimitExceeded);
+    }
+
+    #[test]
+    fn push_error_display_includes_limits() {
+        // Make sure the error messages surface the actual numbers, so the
+        // content page's error log is actionable.
+        let per_site = PushError::PerSiteLimitExceeded.to_string();
+        assert!(per_site.contains(&MAX_PENDING_PER_SITE.to_string()));
+        let global = PushError::GlobalLimitExceeded.to_string();
+        assert!(global.contains(&MAX_PENDING_TOTAL.to_string()));
     }
 }

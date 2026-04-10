@@ -987,6 +987,74 @@ body.panel-console #panel-content {
   color: #c44;
 }
 
+/* ── Signer Audit Log ── */
+
+.signer-audit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.signer-audit-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.signer-audit-clear:hover {
+  color: #c88;
+}
+
+.signer-audit-entry {
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.signer-audit-row1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.signer-audit-site {
+  color: var(--amber);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+}
+
+.signer-audit-time {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.signer-audit-row2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.signer-audit-method {
+  color: var(--text-secondary);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+}
+
+.signer-audit-outcome {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
 /* ── Dev Console ── */
 
 /* When the console panel is active, pin the panel to all edges of

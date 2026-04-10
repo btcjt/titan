@@ -105,9 +105,11 @@ titan/
 
 ## Status
 
-Phases 1–9 complete. Phase 10 (built-in signer) is mostly done — key management, `window.nostr` bridge, per-site permission model with approval prompts, permission management UI. Auto-lock, encrypted file fallback, and audit log remain. See [docs/roadmap.md](docs/roadmap.md).
+Phases 1–9 complete. Phase 10 (built-in signer) is mostly done — key management, `window.nostr` bridge, per-site permission model with approval prompts, permission management UI, in-memory audit log, `getRelays` plumbing, and a hardened content CSP. Auto-lock and encrypted file fallback remain. See [docs/roadmap.md](docs/roadmap.md).
 
 `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads as the browser's default homepage. Name lookups via Nostr relays with race-then-linger search. No Bitcoin Core required.
+
+**Installing an unsigned macOS build?** If Gatekeeper blocks the app, strip the quarantine flag with `xattr -d com.apple.quarantine /Applications/Titan.app`.
 
 ## Building
 

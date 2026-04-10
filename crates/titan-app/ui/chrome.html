@@ -93,7 +93,7 @@
     </div>
     <button id="btn-star" title="Bookmark (Cmd+D)">&#x2606;</button>
     <button id="btn-signer" data-panel="signer" title="Signer (Nostr identity)">&#x1F511;</button>
-    <button id="btn-bookmarks" data-panel="bookmarks" title="Bookmarks">&#x2261;</button>
+    <button id="btn-bookmarks" data-panel="bookmarks" title="Bookmarks">&#x1F516;</button>
     <button id="btn-settings" data-panel="settings" title="Settings" style="font-size:13px;">&#x2699;</button>
     <button id="btn-console" data-panel="console" title="Console (Cmd+Opt+K)" style="font-size:12px;display:none;">&#x2699;</button>
   </div>
@@ -165,6 +165,13 @@
           <button id="settings-check-update" class="settings-btn-secondary">Check for updates</button>
         </div>
         <div class="settings-section">
+          <label class="settings-label">Developer</label>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+            Evaluate JavaScript in the active tab and inspect logs from Titan internals.
+          </div>
+          <button id="settings-open-console" class="settings-btn-secondary">Open developer console</button>
+        </div>
+        <div class="settings-section">
           <button id="settings-save" class="settings-btn">Save</button>
           <button id="settings-reset" class="settings-btn-secondary">Reset to Defaults</button>
         </div>
@@ -172,6 +179,7 @@
     </div>
   </div>
 
+  <script src="helpers.js"></script>
   <script src="chrome.js"></script>
 </body>
 </html>

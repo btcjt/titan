@@ -114,7 +114,7 @@ Titan ships with a built-in signer that injects `window.nostr` into every conten
 **NIP-07 API (injected as `window.nostr`)**
 - [x] `getPublicKey()` — returns active identity's pubkey hex
 - [x] `signEvent(event)` — signs and returns the event
-- [x] `getRelays()` — stub returning `{}` (plumbing through user's relay list is a v2 item)
+- [x] `getRelays()` — returns the user's configured relays from settings
 - [x] `nip44.encrypt(pubkey, plaintext)` / `nip44.decrypt(pubkey, ciphertext)`
 - [x] `nip04.encrypt` / `nip04.decrypt` (legacy, with deprecation banner in prompt)
 - [x] Signature verification before return (self-check)
@@ -125,6 +125,7 @@ Titan ships with a built-in signer that injects `window.nostr` into every conten
 - [x] Sites identified by first path segment of display URL (nsite name or npub)
 - [x] Read-only methods (getPublicKey, getRelays) bypass prompts
 - [x] Session permissions cleared on lock
+- [x] Prompt queue cap (16/site, 128 global) — DoS defense against hostile nsites
 
 **Approval prompt UI**
 - [x] Focus-stealing modal over the content area (site identity, method, scope selector)
@@ -145,24 +146,34 @@ Titan ships with a built-in signer that injects `window.nostr` into every conten
 - [x] Lock / unlock / delete / reveal
 - [x] List all sites with stored permissions grouped by site
 - [x] Revoke individual permissions or all for a site
+- [x] Audit log panel showing recent signer activity with outcome badges
 
 **Integration**
 - [x] `titan-nostr://rpc` async protocol handler routes fetch() calls to nip07 dispatcher
 - [x] `window.nostr` injected via `initialization_script` before page scripts run
 - [x] Works without any external signer installed
 - [x] Site origin tracked from tab state (not self-reported by content — prevents spoofing)
+- [x] Content webview hidden while approval modal is open (prevents z-order bypass)
 
-**History & audit log** — deferred to future
-- [ ] Last 100 signing events logged
-- [ ] Viewable in signer panel
-- [ ] Clear history button
+**History & audit log**
+- [x] Ring buffer of last 200 signer decisions (in-memory, not persisted)
+- [x] Outcomes tracked: approved, denied, auto-denied, signer locked, timed out, failed
+- [x] Viewable in signer panel (most recent 20 shown, with "+ N older entries" footer)
+- [x] Clear log button
 
-**Tests** (98 total in workspace, 48 in titan-app)
+**Remaining**
+- [ ] Encrypted file fallback (master password) when keychain unavailable
+- [ ] Auto-lock after N minutes of inactivity (configurable)
+
+**Tests** (156 total in workspace, 106 in titan-app)
 - [x] signer::parse_secret (8 tests)
 - [x] nip07::sign_event and nip04/nip44 round-trips (14 tests)
-- [x] permissions (12 tests: scope matching, persistence, revoke)
-- [x] prompt_queue (4 async tests: push/resolve, deny_all, ordering)
+- [x] permissions (19 tests: scope matching, persistence, revoke, edge cases)
+- [x] prompt_queue (8 tests: push/resolve, deny_all, ordering, per-site + global caps)
 - [x] log_forward (4 tests)
+- [x] audit_log (6 tests)
+- [x] main.rs helpers (30+ tests: url_decode, base36, content_url_to_display, etc.)
+- [x] helpers.js (20 tests for escapeHtml, escapeAttr, isSafeHttpUrl, isHex)
 
 ## Future
 

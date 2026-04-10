@@ -366,4 +366,85 @@ mod tests {
             "\"deny_always\""
         );
     }
+
+    #[test]
+    fn revoke_nonexistent_permission_is_noop() {
+        let perms = Permissions::load(temp_dir());
+        // Should not panic or error
+        perms.revoke("never-set", "signEvent");
+        assert_eq!(perms.check("never-set", "signEvent"), Decision::NeedApproval);
+    }
+
+    #[test]
+    fn revoke_site_nonexistent_is_noop() {
+        let perms = Permissions::load(temp_dir());
+        perms.record("real", "signEvent", Scope::AllowAlways);
+        perms.revoke_site("nonexistent");
+        // The real site is still intact
+        assert_eq!(perms.check("real", "signEvent"), Decision::Allow);
+    }
+
+    #[test]
+    fn clear_session_preserves_persisted() {
+        let perms = Permissions::load(temp_dir());
+        perms.record("persistent", "signEvent", Scope::AllowAlways);
+        perms.record("persistent-deny", "nip04.encrypt", Scope::DenyAlways);
+        perms.record("session", "signEvent", Scope::AllowSession);
+
+        perms.clear_session();
+
+        // Session gone
+        assert_eq!(
+            perms.check("session", "signEvent"),
+            Decision::NeedApproval
+        );
+        // Persisted untouched
+        assert_eq!(perms.check("persistent", "signEvent"), Decision::Allow);
+        assert_eq!(
+            perms.check("persistent-deny", "nip04.encrypt"),
+            Decision::Deny
+        );
+    }
+
+    #[test]
+    fn is_sensitive_is_case_sensitive() {
+        // Sanity check — the method name is matched exactly
+        assert!(is_sensitive("signEvent"));
+        assert!(!is_sensitive("SignEvent"));
+        assert!(!is_sensitive("signevent"));
+    }
+
+    #[test]
+    fn is_sensitive_unknown_methods() {
+        assert!(!is_sensitive(""));
+        assert!(!is_sensitive("doSomethingSketchy"));
+        assert!(!is_sensitive("nip05"));
+    }
+
+    #[test]
+    fn record_overwrites_previous_scope_for_same_site_and_method() {
+        let perms = Permissions::load(temp_dir());
+        // Start with AllowAlways
+        perms.record("titan", "signEvent", Scope::AllowAlways);
+        assert_eq!(perms.check("titan", "signEvent"), Decision::Allow);
+        // Overwrite with DenyAlways
+        perms.record("titan", "signEvent", Scope::DenyAlways);
+        assert_eq!(perms.check("titan", "signEvent"), Decision::Deny);
+    }
+
+    #[test]
+    fn persisted_json_survives_reload_across_multiple_sites() {
+        let dir = temp_dir();
+        {
+            let perms = Permissions::load(dir.clone());
+            perms.record("a", "signEvent", Scope::AllowAlways);
+            perms.record("b", "nip44.encrypt", Scope::AllowAlways);
+            perms.record("c", "signEvent", Scope::DenyAlways);
+        }
+        let perms = Permissions::load(dir);
+        assert_eq!(perms.check("a", "signEvent"), Decision::Allow);
+        assert_eq!(perms.check("b", "nip44.encrypt"), Decision::Allow);
+        assert_eq!(perms.check("c", "signEvent"), Decision::Deny);
+        assert_eq!(perms.list_persisted().len(), 3);
+    }
 }

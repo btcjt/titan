@@ -5,7 +5,8 @@
 //! error string). The caller is responsible for delivering the response back
 //! to the content webview.
 
-use crate::permissions::{is_sensitive, Decision, Permissions};
+use crate::audit_log::{AuditLog, Outcome};
+use crate::permissions::{is_sensitive, Decision, Permissions, Scope};
 use crate::prompt_queue::PromptQueue;
 use crate::signer::Signer;
 use nostr_sdk::nips::{nip04, nip44};
@@ -61,9 +62,26 @@ pub struct DispatchContext<'a> {
     pub signer: &'a Signer,
     pub permissions: &'a Permissions,
     pub queue: &'a PromptQueue,
+    pub audit_log: &'a AuditLog,
     pub app: &'a AppHandle,
     /// The site origin (nsite name or npub) that made this request.
     pub site: String,
+    /// User's configured Nostr relays, for getRelays() responses.
+    pub relay_urls: Vec<String>,
+}
+
+/// Extract the kind from a signEvent params blob, if present.
+fn extract_kind(params: &Value) -> Option<u16> {
+    params.get("kind").and_then(|v| v.as_u64()).map(|k| k as u16)
+}
+
+fn scope_name(scope: Scope) -> &'static str {
+    match scope {
+        Scope::AllowOnce => "allow_once",
+        Scope::AllowSession => "allow_session",
+        Scope::AllowAlways => "allow_always",
+        Scope::DenyAlways => "deny_always",
+    }
 }
 
 /// Dispatch a NIP-07 request against the signer with permission checking.
@@ -77,31 +95,76 @@ pub struct DispatchContext<'a> {
 /// 3. No stored decision → push onto prompt queue, emit signer-prompt
 ///    event, await user's response via oneshot (with 60s timeout).
 pub async fn dispatch(ctx: DispatchContext<'_>, req: NostrRequest) -> NostrResponse {
+    let kind = if req.method == "signEvent" {
+        extract_kind(&req.params)
+    } else {
+        None
+    };
+
     if !ctx.signer.is_unlocked() {
-        if !ctx.signer.has_identity() {
-            return NostrResponse::err(&req.id, "No Nostr identity configured in Titan");
+        let msg = if !ctx.signer.has_identity() {
+            "No Nostr identity configured in Titan"
+        } else {
+            "Titan signer is locked"
+        };
+        if is_sensitive(&req.method) {
+            ctx.audit_log.record(
+                &ctx.site,
+                &req.method,
+                kind,
+                Outcome::SignerLocked,
+                None,
+            );
         }
-        return NostrResponse::err(&req.id, "Titan signer is locked");
+        return NostrResponse::err(&req.id, msg);
     }
 
     // Permission check (sensitive methods only)
-    if is_sensitive(&req.method) {
+    let applied_scope: Option<Scope> = if is_sensitive(&req.method) {
         let decision = ctx.permissions.check(&ctx.site, &req.method);
         match decision {
             Decision::Allow => {
-                // proceed to execute below
+                // We don't know which exact scope approved it — the
+                // permission store doesn't expose that here. Leave scope
+                // as None for auto-approved reruns; the prompt path
+                // below records the explicit user choice.
+                None
             }
             Decision::Deny => {
+                ctx.audit_log.record(
+                    &ctx.site,
+                    &req.method,
+                    kind,
+                    Outcome::AutoDenied,
+                    Some(scope_name(Scope::DenyAlways).to_string()),
+                );
                 return NostrResponse::err(&req.id, "Request denied by stored permission");
             }
             Decision::NeedApproval => {
-                // Push onto queue, emit event, await response
-                let rx = ctx.queue.push(
+                // Push onto queue, emit event, await response.
+                //
+                // If the queue is full (per-site or global cap), auto-deny
+                // the request without prompting. This prevents a hostile
+                // nsite from exhausting memory by firing sensitive methods
+                // in a loop while the user is AFK.
+                let rx = match ctx.queue.push(
                     req.id.clone(),
                     ctx.site.clone(),
                     req.method.clone(),
                     req.params.clone(),
-                );
+                ) {
+                    Ok(rx) => rx,
+                    Err(push_err) => {
+                        ctx.audit_log.record(
+                            &ctx.site,
+                            &req.method,
+                            kind,
+                            Outcome::AutoDenied,
+                            None,
+                        );
+                        return NostrResponse::err(&req.id, &push_err.to_string());
+                    }
+                };
                 // Emit a snapshot of all pending prompts so the chrome can
                 // render or update its queue.
                 let snapshot = ctx.queue.snapshot();
@@ -110,18 +173,32 @@ pub async fn dispatch(ctx: DispatchContext<'_>, req: NostrRequest) -> NostrRespo
                 let outcome = match timeout(PROMPT_TIMEOUT, rx).await {
                     Ok(Ok(result)) => result,
                     Ok(Err(_)) => {
+                        ctx.audit_log.record(
+                            &ctx.site,
+                            &req.method,
+                            kind,
+                            Outcome::Failed,
+                            None,
+                        );
                         return NostrResponse::err(
                             &req.id,
                             "Signer prompt channel closed unexpectedly",
                         );
                     }
                     Err(_) => {
-                        // Timeout — remove from queue and deny
+                        // Timeout — remove from queue and record
                         let _ = ctx.queue.resolve(crate::prompt_queue::PromptResolution {
                             id: req.id.clone(),
                             approved: false,
-                            scope: crate::permissions::Scope::AllowOnce,
+                            scope: Scope::AllowOnce,
                         });
+                        ctx.audit_log.record(
+                            &ctx.site,
+                            &req.method,
+                            kind,
+                            Outcome::TimedOut,
+                            None,
+                        );
                         return NostrResponse::err(
                             &req.id,
                             "Approval prompt timed out after 60 seconds",
@@ -130,25 +207,53 @@ pub async fn dispatch(ctx: DispatchContext<'_>, req: NostrRequest) -> NostrRespo
                 };
 
                 if !outcome.approved {
+                    ctx.audit_log.record(
+                        &ctx.site,
+                        &req.method,
+                        kind,
+                        Outcome::Denied,
+                        Some(scope_name(outcome.scope).to_string()),
+                    );
                     return NostrResponse::err(&req.id, "Request denied by user");
                 }
 
                 // Record the chosen scope for future requests
                 ctx.permissions.record(&ctx.site, &req.method, outcome.scope);
+                Some(outcome.scope)
             }
         }
-    }
+    } else {
+        None
+    };
 
-    match req.method.as_str() {
+    let response = match req.method.as_str() {
         "getPublicKey" => dispatch_get_public_key(ctx.signer, &req),
         "signEvent" => dispatch_sign_event(ctx.signer, &req),
-        "getRelays" => dispatch_get_relays(ctx.signer, &req),
+        "getRelays" => dispatch_get_relays(&ctx.relay_urls, &req),
         "nip04.encrypt" => dispatch_nip04_encrypt(ctx.signer, &req),
         "nip04.decrypt" => dispatch_nip04_decrypt(ctx.signer, &req),
         "nip44.encrypt" => dispatch_nip44_encrypt(ctx.signer, &req),
         "nip44.decrypt" => dispatch_nip44_decrypt(ctx.signer, &req),
         other => NostrResponse::err(&req.id, format!("Unknown method: {other}")),
+    };
+
+    // Record the final outcome for sensitive methods
+    if is_sensitive(&req.method) {
+        let outcome = if response.error.is_some() {
+            Outcome::Failed
+        } else {
+            Outcome::Approved
+        };
+        ctx.audit_log.record(
+            &ctx.site,
+            &req.method,
+            kind,
+            outcome,
+            applied_scope.map(|s| scope_name(s).to_string()),
+        );
     }
+
+    response
 }
 
 fn dispatch_get_public_key(signer: &Signer, req: &NostrRequest) -> NostrResponse {
@@ -158,10 +263,15 @@ fn dispatch_get_public_key(signer: &Signer, req: &NostrRequest) -> NostrResponse
     }
 }
 
-fn dispatch_get_relays(_signer: &Signer, req: &NostrRequest) -> NostrResponse {
-    // For v1 we return an empty object. Once Settings exposes a personal
-    // relay list with read/write markers we'll plumb that through here.
-    NostrResponse::ok(&req.id, json!({}))
+fn dispatch_get_relays(relay_urls: &[String], req: &NostrRequest) -> NostrResponse {
+    // NIP-07 expects a map of url -> { read: bool, write: bool }.
+    // Titan doesn't yet expose per-relay read/write markers in the UI,
+    // so for now every configured relay is treated as read+write.
+    let mut map = serde_json::Map::new();
+    for url in relay_urls {
+        map.insert(url.clone(), json!({ "read": true, "write": true }));
+    }
+    NostrResponse::ok(&req.id, Value::Object(map))
 }
 
 /// Build and sign an event from a JSON template, returning the full signed
@@ -507,5 +617,120 @@ mod tests {
     fn parse_string_missing_has_clear_error() {
         let err = parse_string(None, "plaintext").unwrap_err();
         assert!(err.contains("plaintext"));
+    }
+
+    // ── extract_kind ──
+
+    #[test]
+    fn extract_kind_valid() {
+        assert_eq!(extract_kind(&json!({"kind": 1})), Some(1));
+        assert_eq!(extract_kind(&json!({"kind": 35128})), Some(35128));
+        assert_eq!(extract_kind(&json!({"kind": 0})), Some(0));
+    }
+
+    #[test]
+    fn extract_kind_missing() {
+        assert_eq!(extract_kind(&json!({})), None);
+        assert_eq!(extract_kind(&json!({"content": "hi"})), None);
+    }
+
+    #[test]
+    fn extract_kind_non_object_input() {
+        assert_eq!(extract_kind(&json!("not an object")), None);
+        assert_eq!(extract_kind(&json!(42)), None);
+        assert_eq!(extract_kind(&json!(null)), None);
+    }
+
+    #[test]
+    fn extract_kind_wrong_type() {
+        // kind as string, not number
+        assert_eq!(extract_kind(&json!({"kind": "1"})), None);
+    }
+
+    #[test]
+    fn extract_kind_truncates_to_u16() {
+        // u16 max = 65535. Anything larger is silently truncated via `as u16`.
+        // This is consistent with nostr-sdk's EventBuilder taking u16 kinds.
+        // Our intent is to capture "what the user sent"; an overflow is
+        // acceptable since the sign path validates separately.
+        let extracted = extract_kind(&json!({"kind": 70000}));
+        assert!(extracted.is_some());
+    }
+
+    // ── scope_name ──
+
+    #[test]
+    fn scope_name_returns_snake_case() {
+        assert_eq!(scope_name(Scope::AllowOnce), "allow_once");
+        assert_eq!(scope_name(Scope::AllowSession), "allow_session");
+        assert_eq!(scope_name(Scope::AllowAlways), "allow_always");
+        assert_eq!(scope_name(Scope::DenyAlways), "deny_always");
+    }
+
+    // ── signEvent with no tags field ──
+
+    #[test]
+    fn sign_event_without_tags_field_works() {
+        let keys = test_keys();
+        let template = json!({
+            "kind": 1,
+            "content": "no tags at all",
+            "created_at": 1700000000u64,
+            // tags field entirely missing
+        });
+        let signed = sign_event_from_template(&keys, &template).expect("sign");
+        let tags = signed.get("tags").and_then(|v| v.as_array()).unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn sign_event_with_empty_tags_array() {
+        let keys = test_keys();
+        let template = json!({
+            "kind": 1,
+            "content": "explicit empty tags",
+            "tags": [],
+            "created_at": 1700000000u64,
+        });
+        let signed = sign_event_from_template(&keys, &template).expect("sign");
+        let tags = signed.get("tags").and_then(|v| v.as_array()).unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn sign_event_with_malformed_tags_filters_invalid() {
+        let keys = test_keys();
+        let template = json!({
+            "kind": 1,
+            "content": "mixed tags",
+            "tags": [
+                ["t", "valid"],
+                [],              // empty — skipped
+                ["p", "not-a-hex-pubkey-but-that's-ok-at-this-layer"],
+            ],
+            "created_at": 1700000000u64,
+        });
+        // Should still succeed; Tag::parse may or may not accept the
+        // second entry. Either way, we verify the function doesn't panic.
+        let result = sign_event_from_template(&keys, &template);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn signed_event_self_verifies() {
+        let keys = test_keys();
+        let template = json!({
+            "kind": 1,
+            "content": "verify me",
+            "tags": [],
+            "created_at": 1700000000u64,
+        });
+        let signed = sign_event_from_template(&keys, &template).unwrap();
+        // The id and sig should be present and non-empty
+        assert!(signed.get("id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(signed.get("sig").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false));
+        // Parse back through nostr-sdk to confirm it's a valid event
+        let event: Event = serde_json::from_value(signed).expect("valid Event");
+        event.verify().expect("signature valid");
     }
 }

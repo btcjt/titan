@@ -142,7 +142,7 @@ Blossom: https://blossom.westernbtc.com
 7. ~~nsite://titan + Nostr Index~~ (DONE — search/register/transfer/browse, nsit-indexer deployed)
 8. ~~Distribution~~ (DONE — GitHub Actions CI/CD, dmg/AppImage/msi, zapstore)
 9. ~~Tabs, Console, Interactive Registration~~ (DONE — multi-tab, console forwarding, bitcoin-cli builder)
-10. Built-in Signer (IN PROGRESS — key management, window.nostr bridge, permissions + approval prompts done; auto-lock, audit log remaining)
+10. Built-in Signer (IN PROGRESS — key management, window.nostr bridge, permissions + approval prompts, audit log, getRelays plumbing, auto-updater, CSP hardening done; auto-lock, encrypted file fallback remaining)
 
 ## Key Decisions Made
 
@@ -163,6 +163,13 @@ Blossom: https://blossom.westernbtc.com
 - Removed built-in name manager — all name operations happen on nsite://titan
 - Kind 35129/1129/15129 for the Nostr name index (published by nsit-indexer service)
 - v1 nsite fallback (kind 34128) for compatibility with existing sites
+- Built-in signer uses OS keychain (keyring v3), no external signer needed
+- Per-site permission model with AllowOnce/Session/Always/DenyAlways scopes
+- Prompt queue capped at 16/site + 128 global to block memory-exhaustion DoS
+- `nsite-content://` responses ship strict CSP (`connect-src 'self' titan-nostr:`) to prevent exfil
+- Site origin read server-side from tab state, never from request body (spoofing defense)
+- Auto-updater via tauri-plugin-updater + minisign signature verification
+- Windows WebView2 workaround: `platform_navigate_url` rewrites `nsite-content://` → `http://nsite-content.` on every navigate call (wry only rewrites at creation time)
 
 ## Registered Names
 

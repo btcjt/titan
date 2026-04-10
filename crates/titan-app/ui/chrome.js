@@ -252,7 +252,7 @@ function renderProfileSection(profile) {
   if (!profile) return "";
   const displayName = profile.display_name || profile.name;
   const parts = [];
-  if (profile.picture) {
+  if (profile.picture && isSafeHttpUrl(profile.picture)) {
     parts.push(`<div class="info-avatar"><img src="${escapeAttr(profile.picture)}" alt="" onerror="this.style.display='none'"></div>`);
   }
   if (displayName) {
@@ -265,7 +265,14 @@ function renderProfileSection(profile) {
     parts.push(`<div class="info-section"><div class="info-label">About</div><div class="info-value" style="white-space:pre-wrap;">${escapeHtml(profile.about)}</div></div>`);
   }
   if (profile.website) {
-    parts.push(`<div class="info-section"><div class="info-label">Website</div><div class="info-value small"><a href="${escapeAttr(profile.website)}" target="_blank" rel="noopener">${escapeHtml(profile.website)}</a></div></div>`);
+    // Only render the website as a clickable link if it's an http(s) URL.
+    // A kind-0 profile with `website: "javascript:..."` would otherwise
+    // execute in the chrome webview context when clicked.
+    if (isSafeHttpUrl(profile.website)) {
+      parts.push(`<div class="info-section"><div class="info-label">Website</div><div class="info-value small"><a href="${escapeAttr(profile.website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(profile.website)}</a></div></div>`);
+    } else {
+      parts.push(`<div class="info-section"><div class="info-label">Website</div><div class="info-value small">${escapeHtml(profile.website)}</div></div>`);
+    }
   }
   if (profile.lud16) {
     parts.push(`<div class="info-section"><div class="info-label">Lightning</div><div class="info-value mono small">${escapeHtml(profile.lud16)}</div></div>`);
@@ -306,8 +313,20 @@ async function renderSiteInfo() {
     let html = "";
 
     if (info.kind === "name") {
-      const utxoShort = info.owner_txid.slice(0, 12) + "..." + info.owner_txid.slice(-8);
-      const txShort = info.txid.slice(0, 12) + "..." + info.txid.slice(-8);
+      // Defensive: the indexer should only publish 64-char hex txids, but
+      // validate before interpolating into an href so a malformed event
+      // cannot break out of the attribute.
+      const ownerTxidSafe = isHex(info.owner_txid, 64) ? info.owner_txid : "";
+      const txidSafe = isHex(info.txid, 64) ? info.txid : "";
+      const ownerVout = Number.isInteger(info.owner_vout) ? info.owner_vout : 0;
+      const utxoShort = ownerTxidSafe ? ownerTxidSafe.slice(0, 12) + "..." + ownerTxidSafe.slice(-8) : "invalid";
+      const txShort = txidSafe ? txidSafe.slice(0, 12) + "..." + txidSafe.slice(-8) : "invalid";
+      const ownerTxLink = ownerTxidSafe
+        ? `<a href="https://mempool.space/tx/${ownerTxidSafe}" target="_blank" rel="noopener noreferrer">${escapeHtml(utxoShort)}:${ownerVout}</a>`
+        : `<span>${escapeHtml(utxoShort)}</span>`;
+      const txLink = txidSafe
+        ? `<a href="https://mempool.space/tx/${txidSafe}" target="_blank" rel="noopener noreferrer">${escapeHtml(txShort)}</a>`
+        : `<span>${escapeHtml(txShort)}</span>`;
       html += `
         <div class="info-section">
           <div class="info-label">Bitcoin Name</div>
@@ -320,19 +339,11 @@ async function renderSiteInfo() {
         </div>
         <div class="info-section">
           <div class="info-label">Owner UTXO</div>
-          <div class="info-value mono small">
-            <a href="https://mempool.space/tx/${info.owner_txid}" target="_blank" rel="noopener">
-              ${escapeHtml(utxoShort)}:${info.owner_vout}
-            </a>
-          </div>
+          <div class="info-value mono small">${ownerTxLink}</div>
         </div>
         <div class="info-section">
           <div class="info-label">Last action tx</div>
-          <div class="info-value mono small">
-            <a href="https://mempool.space/tx/${info.txid}" target="_blank" rel="noopener">
-              ${escapeHtml(txShort)}
-            </a>
-          </div>
+          <div class="info-value mono small">${txLink}</div>
         </div>
         <div class="info-section">
           <div class="info-label">Registered at block</div>
@@ -631,6 +642,7 @@ async function installPendingUpdate() {
 document.getElementById("update-banner-install").addEventListener("click", installPendingUpdate);
 document.getElementById("update-banner-dismiss").addEventListener("click", hideUpdateBanner);
 document.getElementById("settings-check-update").addEventListener("click", () => checkForUpdate(true));
+document.getElementById("settings-open-console").addEventListener("click", () => openPanel("console"));
 
 // ── Signer Panel ──
 
@@ -768,6 +780,13 @@ function renderSignerUnlocked(pubkeyHex) {
       <div class="info-label">Site permissions</div>
       <div id="signer-permissions-list" style="margin-top:6px;"></div>
     </div>
+    <div class="info-section">
+      <div class="info-label signer-audit-header">
+        <span>Recent activity</span>
+        <button class="signer-audit-clear" id="btn-signer-audit-clear" title="Clear history">clear</button>
+      </div>
+      <div id="signer-audit-list" style="margin-top:6px;"></div>
+    </div>
   `;
 
   document.getElementById("signer-pubkey-hex").addEventListener("click", () => {
@@ -814,8 +833,20 @@ function renderSignerUnlocked(pubkeyHex) {
     }
   });
 
-  // Load and render stored site permissions
+  // Load and render stored site permissions + audit log
   renderSignerPermissions();
+  renderSignerAuditLog();
+
+  document.getElementById("btn-signer-audit-clear").addEventListener("click", async () => {
+    if (!confirm("Clear all signer activity history?")) return;
+    try {
+      await invoke("signer_clear_audit_log");
+      log("info", "signer: audit log cleared");
+      renderSignerAuditLog();
+    } catch (err) {
+      alert("Failed to clear: " + err);
+    }
+  });
 }
 
 async function renderSignerPermissions() {
@@ -883,6 +914,59 @@ async function renderSignerPermissions() {
         }
       });
     });
+  } catch (err) {
+    listEl.innerHTML = `<div class="info-value small" style="color:#c66;">${escapeHtml(String(err))}</div>`;
+  }
+}
+
+const OUTCOME_LABELS = {
+  approved: { text: "approved", color: "var(--amber)" },
+  denied: { text: "denied", color: "#c88" },
+  auto_denied: { text: "auto-denied", color: "#c88" },
+  signer_locked: { text: "locked", color: "var(--text-muted)" },
+  timed_out: { text: "timed out", color: "var(--text-muted)" },
+  failed: { text: "failed", color: "#c66" },
+};
+
+function formatRelativeTime(unixSeconds) {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - unixSeconds;
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+async function renderSignerAuditLog() {
+  const listEl = document.getElementById("signer-audit-list");
+  if (!listEl) return;
+  try {
+    const entries = await invoke("signer_audit_log");
+    if (entries.length === 0) {
+      listEl.innerHTML = `<div class="info-value small" style="color:var(--text-muted);">No signer activity yet.</div>`;
+      return;
+    }
+
+    // Show only the 20 most recent in the panel; the rest stay in Rust memory
+    const toShow = entries.slice(0, 20);
+
+    const html = toShow.map((entry) => {
+      const outcome = OUTCOME_LABELS[entry.outcome] || { text: entry.outcome, color: "var(--text-secondary)" };
+      const kindSuffix = entry.kind !== undefined && entry.kind !== null ? ` (kind ${entry.kind})` : "";
+      const scopeSuffix = entry.scope ? ` · ${entry.scope.replace(/_/g, " ")}` : "";
+      return `<div class="signer-audit-entry">
+        <div class="signer-audit-row1">
+          <span class="signer-audit-site">${escapeHtml(entry.site)}</span>
+          <span class="signer-audit-time">${formatRelativeTime(entry.timestamp)}</span>
+        </div>
+        <div class="signer-audit-row2">
+          <span class="signer-audit-method">${escapeHtml(entry.method)}${escapeHtml(kindSuffix)}</span>
+          <span class="signer-audit-outcome" style="color:${outcome.color};">${outcome.text}${escapeHtml(scopeSuffix)}</span>
+        </div>
+      </div>`;
+    }).join("");
+
+    listEl.innerHTML = html + (entries.length > 20 ? `<div class="info-value small" style="color:var(--text-muted);margin-top:6px;">+ ${entries.length - 20} older entries</div>` : "");
   } catch (err) {
     listEl.innerHTML = `<div class="info-value small" style="color:#c66;">${escapeHtml(String(err))}</div>`;
   }
@@ -1273,13 +1357,10 @@ function hideLoading() {
   setTimeout(() => { loadingBar.className = ""; }, 500);
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function escapeAttr(s) {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-}
+// Security-critical helpers (escapeHtml, escapeAttr, isSafeHttpUrl, isHex)
+// are defined in helpers.js, loaded before this file in chrome.html. They
+// are extracted to a separate file so they can be unit tested in Node
+// without loading chrome.js's DOM-dependent top-level code.
 
 // Keep content webview sized correctly on window resize
 window.addEventListener("resize", () => updateContentLayout());

@@ -8,12 +8,14 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audit_log;
 mod log_forward;
 mod nip07;
 mod permissions;
 mod prompt_queue;
 mod signer;
 
+use audit_log::AuditLog;
 use permissions::Permissions;
 use prompt_queue::PromptQueue;
 use serde::{Deserialize, Serialize};
@@ -176,6 +178,7 @@ struct AppState {
     signer: Signer,
     permissions: Permissions,
     prompt_queue: PromptQueue,
+    audit_log: AuditLog,
 }
 
 impl AppState {
@@ -203,6 +206,31 @@ fn active_webview_label(state: &AppState) -> Option<String> {
     let active = *state.active_tab.lock().unwrap();
     let tabs = state.tabs.lock().unwrap();
     tabs.iter().find(|t| t.id == active).map(|t| t.label.clone())
+}
+
+/// Rewrite a `nsite-content://` URL to the form WebView2 (Windows) expects.
+///
+/// Windows WebView2 doesn't support custom URL schemes natively. Wry works
+/// around this by rewriting `nsite-content://foo/bar` to
+/// `http://nsite-content.foo/bar` internally and registering a filter for
+/// that prefix. But wry only applies the rewrite at webview creation time —
+/// when we call `webview.navigate()` later, the raw `nsite-content://` URL
+/// is passed straight through, and WebView2 silently drops it.
+///
+/// On macOS and Linux, `nsite-content://` is a real custom scheme with full
+/// native support, so no rewrite is needed.
+#[cfg(target_os = "windows")]
+fn platform_navigate_url(nsite_content_url: &str) -> String {
+    if let Some(rest) = nsite_content_url.strip_prefix("nsite-content://") {
+        format!("http://nsite-content.{rest}")
+    } else {
+        nsite_content_url.to_string()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_navigate_url(nsite_content_url: &str) -> String {
+    nsite_content_url.to_string()
 }
 
 /// Extract the "site origin" for a tab — the first path segment of its
@@ -249,7 +277,8 @@ async fn navigate(
     // Internal pages (bookmarks, etc.)
     if url == "internal:bookmarks" {
         if let Some(content) = app.get_webview(&active_label) {
-            let _ = content.navigate("nsite-content://internal/bookmarks".parse().unwrap());
+            let url = platform_navigate_url("nsite-content://internal/bookmarks");
+            let _ = content.navigate(url.parse().unwrap());
         }
         return Ok("bookmarks".to_string());
     }
@@ -258,7 +287,7 @@ async fn navigate(
     if url.starts_with("internal:error:") {
         let msg = &url["internal:error:".len()..];
         if let Some(content) = app.get_webview(&active_label) {
-            let error_url = format!("nsite-content://internal/error?msg={}", msg);
+            let error_url = platform_navigate_url(&format!("nsite-content://internal/error?msg={}", msg));
             let _ = content.navigate(error_url.parse().unwrap());
         }
         return Ok("error".to_string());
@@ -297,7 +326,7 @@ async fn navigate(
         Some(name) => format!("{}.{}", pubkey_hex, name),
         None => pubkey_hex,
     };
-    let content_url = format!("nsite-content://{}{}", content_host, path);
+    let content_url = platform_navigate_url(&format!("nsite-content://{}{}", content_host, path));
 
     info!("navigating to {host}{path}");
 
@@ -691,6 +720,21 @@ async fn signer_revoke_site(
     site: String,
 ) -> Result<(), String> {
     state.permissions.revoke_site(&site);
+    Ok(())
+}
+
+#[tauri::command]
+async fn signer_audit_log(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<audit_log::AuditEntry>, String> {
+    Ok(state.audit_log.list())
+}
+
+#[tauri::command]
+async fn signer_clear_audit_log(
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.audit_log.clear();
     Ok(())
 }
 
@@ -1102,7 +1146,11 @@ fn parse_content_host(host: &str) -> Option<([u8; 32], Option<String>)> {
 
 /// Convert a nsite-content:// URL back to a display URL for the address bar.
 fn content_url_to_display(url: &tauri::Url) -> Option<String> {
-    let host = url.host_str()?;
+    let raw_host = url.host_str()?;
+    // On Windows the URL will be http://nsite-content.<host>/<path>
+    // (wry workaround). Strip the nsite-content. prefix so the rest of
+    // the function sees the original host.
+    let host = raw_host.strip_prefix("nsite-content.").unwrap_or(raw_host);
     if host == "internal" {
         return None;
     }
@@ -1161,6 +1209,75 @@ fn guess_content_type(path: &str) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
+}
+
+/// Content Security Policy applied to every `nsite-content://` response.
+///
+/// Goal: keep the nsite ecosystem functional (pages routinely open Nostr
+/// relay websockets, fetch NIP-05 / profile endpoints, load avatars) while
+/// blocking the worst exfiltration channels and stopping script/plugin
+/// injection.
+///
+/// - `connect-src 'self' titan-nostr: https: wss:` — `titan-nostr:` keeps
+///   the injected `window.nostr` bridge working. `wss:` lets pages open
+///   relay sockets directly (titan-nsite is a Next.js app that queries
+///   relays from inside the webview — without this, every nsite with its
+///   own Nostr client breaks). `https:` allows NIP-05, profile, and
+///   Blossom lookups. Plain `http:` is excluded so at least plaintext
+///   exfil is blocked.
+/// - `script-src 'self' 'unsafe-inline' 'unsafe-eval'` — no external
+///   scripts. Bundled sites (Next.js, Vite, etc.) need inline + eval.
+/// - `img-src 'self' data: blob: https:` — allows external HTTPS images
+///   (profile avatars, OG images). Tracking-pixel risk is accepted here
+///   because we can't tell apart a legitimate avatar from a tracker.
+/// - `object-src 'none'` / `frame-src 'self'` — no plugins, no cross-site
+///   framing.
+/// - `base-uri 'self'` / `form-action 'self'` — prevent base-tag hijack
+///   and form-based exfil.
+///
+/// What this does NOT protect against: a compromised nsite can still
+/// exfiltrate data by broadcasting it through a public relay or by
+/// issuing an HTTPS request to an attacker server. The signer prompt
+/// remains the last line of defense for sensitive event content — the
+/// user must approve each `signEvent` that touches anything private.
+const NSITE_CONTENT_CSP: &str = "default-src 'self'; \
+    script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: blob: https:; \
+    font-src 'self' data: https:; \
+    connect-src 'self' titan-nostr: https: wss:; \
+    frame-src 'self'; \
+    object-src 'none'; \
+    base-uri 'self'; \
+    form-action 'self'";
+
+/// Apply the same defense-in-depth security headers to every response from
+/// the `nsite-content://` protocol handler. Centralized so we can't forget
+/// one on a new response path.
+///
+/// Headers:
+/// - `Content-Security-Policy`: see `NSITE_CONTENT_CSP`
+/// - `X-Content-Type-Options: nosniff`: blocks MIME sniffing — a malicious
+///   nsite can't label HTML as PNG and have the browser execute it
+/// - `Referrer-Policy: no-referrer`: outbound links (to mempool.space etc.)
+///   don't leak the nsite pubkey/host in the Referer header
+/// - `Permissions-Policy`: disable powerful browser APIs by default
+/// - `X-Frame-Options: SAMEORIGIN`: legacy clickjacking defense (redundant
+///   with CSP `frame-src`, kept for older renderers)
+fn apply_nsite_content_headers(
+    builder: tauri::http::response::Builder,
+) -> tauri::http::response::Builder {
+    builder
+        .header("content-security-policy", NSITE_CONTENT_CSP)
+        .header("x-content-type-options", "nosniff")
+        .header("referrer-policy", "no-referrer")
+        .header(
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), \
+             magnetometer=(), gyroscope=(), accelerometer=(), autoplay=(), \
+             fullscreen=(self), midi=(), publickey-credentials-get=()",
+        )
+        .header("x-frame-options", "SAMEORIGIN")
 }
 
 // ── Internal Pages ──
@@ -1253,8 +1370,24 @@ fn url_decode(s: &str) -> String {
     let mut chars = s.bytes();
     while let Some(b) = chars.next() {
         if b == b'%' {
-            let hi = chars.next().unwrap_or(b'0');
-            let lo = chars.next().unwrap_or(b'0');
+            // Need exactly two hex digits after the `%`. If either byte
+            // is missing or isn't a valid hex pair, emit the `%` and the
+            // partial bytes literally.
+            let hi = match chars.next() {
+                Some(c) => c,
+                None => {
+                    result.push('%');
+                    break;
+                }
+            };
+            let lo = match chars.next() {
+                Some(c) => c,
+                None => {
+                    result.push('%');
+                    result.push(hi as char);
+                    break;
+                }
+            };
             let hex = [hi, lo];
             if let Ok(s) = std::str::from_utf8(&hex) {
                 if let Ok(val) = u8::from_str_radix(s, 16) {
@@ -1466,6 +1599,17 @@ fn create_tab_webview(
                 return true;
             }
 
+            // Windows WebView2 workaround: wry rewrites nsite-content://
+            // URLs to http://nsite-content.<host>/<path>. Allow those
+            // navigations through so the internal browser can load them.
+            if (scheme == "http" || scheme == "https")
+                && url.host_str()
+                    .map(|h| h == "nsite-content" || h.starts_with("nsite-content."))
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+
             if scheme == "titan-cmd" {
                 let cmd = url.host_str().unwrap_or("");
                 let handle = handle1.clone();
@@ -1523,7 +1667,8 @@ fn create_tab_webview(
                     info!("intercepted nsite:// link: {url_str}");
                     let cleaned = url_str.replace("nsite://", "");
                     if let Some(content_wv) = handle.get_webview(&wv_label) {
-                        let _ = content_wv.navigate("nsite-content://internal/loading".parse().unwrap());
+                        let loading_url = platform_navigate_url("nsite-content://internal/loading");
+                        let _ = content_wv.navigate(loading_url.parse().unwrap());
                     }
                     let _ = handle.emit("nsite-link-clicked", &cleaned);
                 });
@@ -1665,6 +1810,7 @@ fn main() {
         signer,
         permissions,
         prompt_queue: PromptQueue::new(),
+        audit_log: AuditLog::new(),
     });
 
     let protocol_state = state.clone();
@@ -1703,11 +1849,13 @@ fn main() {
                         _ => (welcome_page(), "text/html"),
                     };
                     responder.respond(
-                        tauri::http::Response::builder()
-                            .status(200)
-                            .header("content-type", ct)
-                            .body(body)
-                            .unwrap(),
+                        apply_nsite_content_headers(
+                            tauri::http::Response::builder()
+                                .status(200)
+                                .header("content-type", ct),
+                        )
+                        .body(body)
+                        .unwrap(),
                     );
                     return;
                 }
@@ -1717,11 +1865,13 @@ fn main() {
                     Some(p) => p,
                     None => {
                         responder.respond(
-                            tauri::http::Response::builder()
-                                .status(404)
-                                .header("content-type", "text/html")
-                                .body(error_page("Invalid content host"))
-                                .unwrap(),
+                            apply_nsite_content_headers(
+                                tauri::http::Response::builder()
+                                    .status(404)
+                                    .header("content-type", "text/html"),
+                            )
+                            .body(error_page("Invalid content host"))
+                            .unwrap(),
                         );
                         return;
                     }
@@ -1732,11 +1882,13 @@ fn main() {
                     Ok(r) => r,
                     Err(e) => {
                         responder.respond(
-                            tauri::http::Response::builder()
-                                .status(500)
-                                .header("content-type", "text/html")
-                                .body(error_page(&e))
-                                .unwrap(),
+                            apply_nsite_content_headers(
+                                tauri::http::Response::builder()
+                                    .status(500)
+                                    .header("content-type", "text/html"),
+                            )
+                            .body(error_page(&e))
+                            .unwrap(),
                         );
                         return;
                     }
@@ -1746,22 +1898,26 @@ fn main() {
                     Ok(content) => {
                         let content_type = guess_content_type(path);
                         responder.respond(
-                            tauri::http::Response::builder()
-                                .status(200)
-                                .header("content-type", &content_type)
-                                .header("access-control-allow-origin", "*")
-                                .body(content.data)
-                                .unwrap(),
+                            apply_nsite_content_headers(
+                                tauri::http::Response::builder()
+                                    .status(200)
+                                    .header("content-type", &content_type)
+                                    .header("access-control-allow-origin", "*"),
+                            )
+                            .body(content.data)
+                            .unwrap(),
                         );
                     }
                     Err(e) => {
                         warn!("failed to resolve {host}{path}: {e}");
                         responder.respond(
-                            tauri::http::Response::builder()
-                                .status(404)
-                                .header("content-type", "text/html")
-                                .body(error_page(&format!("{e}")))
-                                .unwrap(),
+                            apply_nsite_content_headers(
+                                tauri::http::Response::builder()
+                                    .status(404)
+                                    .header("content-type", "text/html"),
+                            )
+                            .body(error_page(&format!("{e}")))
+                            .unwrap(),
                         );
                     }
                 }
@@ -1816,12 +1972,19 @@ fn main() {
                     let site = tab_site_for_label(&state, &webview_label)
                         .unwrap_or_else(|| "unknown".to_string());
 
+                    // Snapshot the user's configured relays so getRelays()
+                    // can return them. We clone here to release the settings
+                    // lock before awaiting anything in dispatch.
+                    let relay_urls = state.settings.lock().unwrap().relays.clone();
+
                     let dispatch_ctx = nip07::DispatchContext {
                         signer: &state.signer,
                         permissions: &state.permissions,
                         queue: &state.prompt_queue,
+                        audit_log: &state.audit_log,
                         app: &app,
                         site,
+                        relay_urls,
                     };
                     let response = nip07::dispatch(dispatch_ctx, req).await;
                     let v = serde_json::to_value(&response).unwrap();
@@ -1840,6 +2003,7 @@ fn main() {
             signer_lock, signer_delete, signer_reveal_nsec,
             signer_pending_prompts, signer_resolve_prompt,
             signer_list_permissions, signer_revoke_permission, signer_revoke_site,
+            signer_audit_log, signer_clear_audit_log,
             hide_content_webview, show_content_webview,
             check_for_update, install_update,
         ])
@@ -1924,6 +2088,40 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
+    fn platform_navigate_url_rewrites_on_windows() {
+        assert_eq!(
+            platform_navigate_url("nsite-content://internal/welcome"),
+            "http://nsite-content.internal/welcome"
+        );
+        assert_eq!(
+            platform_navigate_url("nsite-content://ab.titan/path"),
+            "http://nsite-content.ab.titan/path"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn platform_navigate_url_is_identity_off_windows() {
+        assert_eq!(
+            platform_navigate_url("nsite-content://internal/welcome"),
+            "nsite-content://internal/welcome"
+        );
+        assert_eq!(
+            platform_navigate_url("nsite-content://ab.titan/path"),
+            "nsite-content://ab.titan/path"
+        );
+    }
+
+    #[test]
+    fn content_url_to_display_strips_windows_prefix() {
+        // Simulate the Windows-rewritten URL form
+        let url = tauri::Url::parse("http://nsite-content.0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20.titan/").unwrap();
+        let display = content_url_to_display(&url);
+        assert_eq!(display, Some("titan".to_string()));
+    }
+
+    #[test]
     fn resolve_npub_sync() {
         let parsed =
             parse_host_sync("npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj")
@@ -1938,5 +2136,238 @@ mod tests {
     fn name_goes_to_nostr() {
         assert!(parse_host_sync("westernbtc").is_err());
         assert!(parse_host_sync("titan").is_err());
+    }
+
+    // ── decode_npub edge cases ──
+
+    #[test]
+    fn decode_npub_valid() {
+        let bytes = decode_npub("npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj")
+            .unwrap();
+        assert_eq!(
+            hex::encode(bytes),
+            "781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5"
+        );
+    }
+
+    #[test]
+    fn decode_npub_rejects_invalid_bech32() {
+        assert!(decode_npub("npub1notavalidbech32string").is_err());
+    }
+
+    #[test]
+    fn decode_npub_rejects_wrong_prefix() {
+        // nsec prefix should fail — we only accept npub
+        assert!(decode_npub("nsec1hmq6xuqnplk5lw0h3700cujmx5gymqn5wrn42u6432r6ntzumezqc3marw").is_err());
+    }
+
+    // ── base36 pubkey decoding ──
+
+    #[test]
+    fn base36_single_digit_roundtrip() {
+        // "0" -> [0]
+        let bytes = bigint_from_base36("0").unwrap();
+        assert_eq!(bytes, vec![0]);
+    }
+
+    #[test]
+    fn base36_uppercase_lowercase_equivalent() {
+        let a = bigint_from_base36("abc123").unwrap();
+        let b = bigint_from_base36("ABC123").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn base36_rejects_invalid_char() {
+        assert!(bigint_from_base36("bad!char").is_err());
+        assert!(bigint_from_base36("hello world").is_err());
+    }
+
+    #[test]
+    fn base36_pubkey_rejects_oversized() {
+        // A 51-char base36 string that decodes to more than 32 bytes
+        // should fail in decode_base36_pubkey. Use all 'z' chars which
+        // maximizes the value.
+        let oversized = "z".repeat(60);
+        assert!(decode_base36_pubkey(&oversized).is_err());
+    }
+
+    // ── html_escape ──
+
+    #[test]
+    fn html_escape_basic() {
+        assert_eq!(html_escape(""), "");
+        assert_eq!(html_escape("hello"), "hello");
+        assert_eq!(html_escape("a & b"), "a &amp; b");
+        assert_eq!(html_escape("<script>"), "&lt;script&gt;");
+        assert_eq!(html_escape("a<b>c&d"), "a&lt;b&gt;c&amp;d");
+    }
+
+    #[test]
+    fn html_escape_preserves_unicode_and_quotes() {
+        // We only escape &, <, > — quotes pass through unchanged.
+        assert_eq!(html_escape("hello \"world\""), "hello \"world\"");
+        assert_eq!(html_escape("café 🎉"), "café 🎉");
+    }
+
+    // ── url_decode ──
+
+    #[test]
+    fn url_decode_plain_text() {
+        assert_eq!(url_decode("hello"), "hello");
+        assert_eq!(url_decode(""), "");
+    }
+
+    #[test]
+    fn url_decode_percent_encoded() {
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("a%2Bb"), "a+b");
+        assert_eq!(url_decode("%3Cscript%3E"), "<script>");
+    }
+
+    #[test]
+    fn url_decode_plus_becomes_space() {
+        assert_eq!(url_decode("hello+world"), "hello world");
+    }
+
+    #[test]
+    fn url_decode_invalid_percent_passes_through() {
+        // A malformed percent sequence should not crash; it passes through.
+        assert_eq!(url_decode("100%"), "100%");
+        assert_eq!(url_decode("a%zz"), "a%zz");
+    }
+
+    #[test]
+    fn url_decode_trailing_percent_with_one_char() {
+        // "%a" at the end — one char present but not enough for hex pair.
+        // Should emit literally, not fabricate a zero byte.
+        assert_eq!(url_decode("a%f"), "a%f");
+    }
+
+    #[test]
+    fn url_decode_does_not_emit_null_byte() {
+        // Regression: a trailing % must never produce a \0 character.
+        let result = url_decode("hello%");
+        assert!(!result.contains('\0'), "result was: {:?}", result);
+        assert_eq!(result, "hello%");
+    }
+
+    #[test]
+    fn url_decode_mixed() {
+        assert_eq!(
+            url_decode("name%3Dtitan+foo%26bar"),
+            "name=titan foo&bar"
+        );
+    }
+
+    // ── content_url_to_display all host forms ──
+
+    #[test]
+    fn content_url_to_display_internal_returns_none() {
+        let url = tauri::Url::parse("nsite-content://internal/welcome").unwrap();
+        assert_eq!(content_url_to_display(&url), None);
+    }
+
+    #[test]
+    fn content_url_to_display_hex_returns_npub() {
+        let url = tauri::Url::parse(
+            "nsite-content://781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5/",
+        )
+        .unwrap();
+        let display = content_url_to_display(&url).unwrap();
+        assert!(display.starts_with("npub1"));
+    }
+
+    #[test]
+    fn content_url_to_display_hex_with_path() {
+        let url = tauri::Url::parse(
+            "nsite-content://781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5/blog/post.html",
+        )
+        .unwrap();
+        let display = content_url_to_display(&url).unwrap();
+        assert!(display.starts_with("npub1"));
+        assert!(display.ends_with("/blog/post.html"));
+    }
+
+    #[test]
+    fn content_url_to_display_hex_with_name() {
+        let url = tauri::Url::parse(
+            "nsite-content://781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5.titan/",
+        )
+        .unwrap();
+        assert_eq!(content_url_to_display(&url), Some("titan".to_string()));
+    }
+
+    #[test]
+    fn content_url_to_display_hex_with_name_and_path() {
+        let url = tauri::Url::parse(
+            "nsite-content://781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5.titan/guide",
+        )
+        .unwrap();
+        assert_eq!(
+            content_url_to_display(&url),
+            Some("titan/guide".to_string())
+        );
+    }
+
+    // ── parse_content_host edge cases ──
+
+    #[test]
+    fn parse_content_host_short_hex_rejected() {
+        // 63 hex chars — just under the 64-char minimum
+        assert!(parse_content_host(&"ab".repeat(31)).is_none());
+    }
+
+    #[test]
+    fn parse_content_host_non_hex_rejected() {
+        let not_hex = "z".repeat(64);
+        assert!(parse_content_host(&not_hex).is_none());
+    }
+
+    #[test]
+    fn parse_content_host_hex_then_non_dot_separator() {
+        // 64 hex chars followed by a non-dot character (no extra chars
+        // until byte 65) — this should decode as plain hex only
+        let hex = "ab".repeat(32);
+        // Input is exactly 64 chars so it's the plain hex case
+        let (pk, name) = parse_content_host(&hex).unwrap();
+        assert_eq!(pk, [0xab; 32]);
+        assert!(name.is_none());
+    }
+
+    // ── guess_content_type edge cases ──
+
+    #[test]
+    fn guess_content_type_uppercase_extension() {
+        // Lowercase normalized — PNG should still map to image/png
+        assert_eq!(guess_content_type("/PHOTO.PNG"), "image/png");
+    }
+
+    #[test]
+    fn guess_content_type_directory_index() {
+        assert_eq!(guess_content_type("/blog/"), "text/html");
+    }
+
+    #[test]
+    fn guess_content_type_no_extension() {
+        assert_eq!(guess_content_type("/README"), "text/html");
+    }
+
+    #[test]
+    fn guess_content_type_fonts_and_wasm() {
+        assert_eq!(guess_content_type("/font.woff2"), "font/woff2");
+        assert_eq!(guess_content_type("/font.woff"), "font/woff");
+        assert_eq!(guess_content_type("/font.ttf"), "font/ttf");
+        assert_eq!(guess_content_type("/module.wasm"), "application/wasm");
+    }
+
+    #[test]
+    fn guess_content_type_images() {
+        assert_eq!(guess_content_type("/icon.svg"), "image/svg+xml");
+        assert_eq!(guess_content_type("/photo.webp"), "image/webp");
+        assert_eq!(guess_content_type("/icon.ico"), "image/x-icon");
+        assert_eq!(guess_content_type("/photo.jpg"), "image/jpeg");
+        assert_eq!(guess_content_type("/photo.jpeg"), "image/jpeg");
+        assert_eq!(guess_content_type("/photo.gif"), "image/gif");
     }
 }
