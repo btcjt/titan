@@ -1253,3 +1253,20 @@ body.panel-console #panel-console {
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
+
+.settings-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-kbd-hint {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}

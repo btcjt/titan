@@ -9,6 +9,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audit_log;
+mod bookmarks;
 mod log_forward;
 mod nip07;
 mod permissions;
@@ -121,13 +122,10 @@ struct ConsolePayload {
     tab_label: String,
 }
 
-/// A saved bookmark.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Bookmark {
-    url: String,
-    title: String,
-    created_at: u64,
-}
+// `Bookmark` lives in the `bookmarks` module along with the
+// NIP-51-backed BookmarkStore. Re-imported here so existing call sites
+// (Tauri commands, the bookmarks_page renderer) can stay terse.
+use bookmarks::{Bookmark, BookmarkStore, LoadOutcome};
 
 /// Browser settings, persisted to settings.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +168,7 @@ struct AppState {
     resolver: OnceCell<Resolver>,
     cache_dir: PathBuf,
     data_dir: PathBuf,
-    bookmarks: std::sync::Mutex<Vec<Bookmark>>,
+    bookmarks: BookmarkStore,
     settings: std::sync::Mutex<Settings>,
     tabs: std::sync::Mutex<Vec<Tab>>,
     active_tab: std::sync::Mutex<u32>,
@@ -911,22 +909,173 @@ fn save_settings(data_dir: &PathBuf, settings: &Settings) {
     }
 }
 
-fn bookmarks_path(data_dir: &PathBuf) -> PathBuf {
-    data_dir.join("bookmarks.json")
-}
-
-fn load_bookmarks(data_dir: &PathBuf) -> Vec<Bookmark> {
-    let path = bookmarks_path(data_dir);
-    match std::fs::read_to_string(&path) {
-        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-        Err(_) => vec![],
+/// Build a kind 10003 event from the current bookmark list and publish
+/// it to the configured relays. Marks the store as in sync on success.
+/// Used by mutating commands and by the startup migration path.
+///
+/// Failures are logged but not propagated to the user — bookmark
+/// edits always succeed locally, and the next online publish will
+/// catch up. The store's `pending_publish` flag tracks this state.
+async fn publish_bookmarks_to_nostr(state: &Arc<AppState>) {
+    if !state.signer.is_unlocked() {
+        debug!("publish_bookmarks_to_nostr: signer locked, skipping");
+        return;
+    }
+    let event = match state.bookmarks.build_event(&state.signer) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("failed to build bookmark event: {e}");
+            return;
+        }
+    };
+    let resolver = match state.resolver().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("publish_bookmarks_to_nostr: resolver init failed: {e}");
+            return;
+        }
+    };
+    match resolver.publish_event(event).await {
+        Ok(n) if n > 0 => {
+            info!("published bookmark list to {n} relay(s)");
+            state.bookmarks.mark_published();
+            emit_bookmarks_changed();
+        }
+        Ok(_) => warn!("bookmark list rejected by all relays"),
+        Err(e) => warn!("failed to publish bookmark list: {e}"),
     }
 }
 
-fn save_bookmarks(data_dir: &PathBuf, bookmarks: &[Bookmark]) {
-    let path = bookmarks_path(data_dir);
-    if let Ok(json) = serde_json::to_string_pretty(bookmarks) {
-        let _ = std::fs::write(&path, json);
+/// Background startup sync for bookmarks. Handles legacy migration,
+/// pending-publish flush, and remote pull. Logs but never panics; the
+/// chrome bookmarks panel always paints from the local cache first.
+async fn sync_bookmarks_on_startup(state: Arc<AppState>, outcome: LoadOutcome) {
+    // Wait briefly for the resolver / signer to settle. Auto-unlock
+    // already happened synchronously in main(), but the relay pool
+    // initializes lazily on first .resolver() call.
+    if !state.signer.is_unlocked() {
+        debug!("bookmark sync: signer not unlocked, skipping");
+        return;
+    }
+
+    match outcome {
+        LoadOutcome::Empty => {
+            // Nothing on disk — try to pull a remote list. If there is
+            // no remote either, we stay empty.
+            pull_remote_bookmarks(&state).await;
+        }
+        LoadOutcome::Legacy { .. } => {
+            // One-time migration: publish the legacy bookmarks as a
+            // fresh kind 10003. The store is already marked dirty by
+            // load(), so publish_bookmarks_to_nostr will rewrite the
+            // file in the new format on success.
+            info!("bookmark sync: migrating legacy bookmarks.json to NIP-51 kind 10003");
+            publish_bookmarks_to_nostr(&state).await;
+        }
+        LoadOutcome::NewFormat {
+            pending_publish, ..
+        } => {
+            if pending_publish {
+                // We had unpublished local edits from a previous offline
+                // session — flush them first.
+                info!("bookmark sync: flushing pending local edits");
+                publish_bookmarks_to_nostr(&state).await;
+            } else {
+                // In sync at last shutdown — see if another device has
+                // a newer list and merge it in.
+                pull_remote_bookmarks(&state).await;
+            }
+        }
+    }
+}
+
+/// Fetch the remote kind 10003 event, decrypt it, and replace the local
+/// list if the remote is non-empty. Best-effort; failures are logged.
+async fn pull_remote_bookmarks(state: &Arc<AppState>) {
+    let pubkey_hex = match state.signer.get_pubkey() {
+        Some(h) => h,
+        None => return,
+    };
+    let pubkey: [u8; 32] = match hex::decode(&pubkey_hex)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+    {
+        Some(p) => p,
+        None => {
+            warn!("pull_remote_bookmarks: own pubkey not 32 bytes");
+            return;
+        }
+    };
+
+    let resolver = match state.resolver().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("pull_remote_bookmarks: resolver init failed: {e}");
+            return;
+        }
+    };
+
+    let event = match resolver
+        .fetch_replaceable_event(&pubkey, bookmarks::BOOKMARKS_KIND)
+        .await
+    {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            // No remote bookmark list. If we have local bookmarks,
+            // this is "local is ahead of remote" — push them up so
+            // other devices (and future runs) see them. Common cases:
+            //   1. First launch after switching from an older Titan
+            //      kind (e.g. 10003 → 10129) where the previous event
+            //      is orphaned on relays.
+            //   2. User installed Titan on a new device with an
+            //      existing nsec that never published bookmarks before.
+            //   3. Fresh install with legacy bookmarks.json that was
+            //      already migrated on a previous boot.
+            // If the local list is also empty, there's genuinely
+            // nothing to do — a fresh user on a fresh device.
+            let local_count = state.bookmarks.list().len();
+            if local_count > 0 {
+                info!(
+                    "pull_remote_bookmarks: no remote list but {local_count} local bookmark(s); publishing"
+                );
+                publish_bookmarks_to_nostr(state).await;
+            } else {
+                debug!("pull_remote_bookmarks: no remote list and no local bookmarks");
+            }
+            return;
+        }
+        Err(e) => {
+            warn!("pull_remote_bookmarks: relay fetch failed: {e}");
+            return;
+        }
+    };
+
+    let decoded = match BookmarkStore::parse_remote_event(&state.signer, &event) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("pull_remote_bookmarks: decrypt/parse failed: {e}");
+            return;
+        }
+    };
+
+    info!(
+        "pull_remote_bookmarks: pulled {} entries from kind {} (created_at {})",
+        decoded.len(),
+        bookmarks::BOOKMARKS_KIND,
+        event.created_at.as_u64()
+    );
+    state.bookmarks.replace_from_remote(decoded);
+    emit_bookmarks_changed();
+}
+
+/// Emit a chrome event to refresh the bookmarks panel if it's open.
+/// Best-effort — uses the globally registered AppHandle from log_forward
+/// so background tasks don't have to thread one through.
+fn emit_bookmarks_changed() {
+    if let Some(handle) = log_forward::app_handle() {
+        if let Err(e) = handle.emit("bookmarks-changed", ()) {
+            debug!("emit bookmarks-changed failed: {e}");
+        }
     }
 }
 
@@ -936,20 +1085,8 @@ async fn add_bookmark(
     url: String,
     title: String,
 ) -> Result<(), String> {
-    let mut bookmarks = state.bookmarks.lock().unwrap();
-    if bookmarks.iter().any(|b| b.url == url) {
-        return Ok(()); // already bookmarked
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    bookmarks.push(Bookmark {
-        url,
-        title,
-        created_at: ts,
-    });
-    save_bookmarks(&state.data_dir, &bookmarks);
+    state.bookmarks.add(url, title);
+    publish_bookmarks_to_nostr(&state).await;
     Ok(())
 }
 
@@ -958,9 +1095,8 @@ async fn remove_bookmark(
     state: State<'_, Arc<AppState>>,
     url: String,
 ) -> Result<(), String> {
-    let mut bookmarks = state.bookmarks.lock().unwrap();
-    bookmarks.retain(|b| b.url != url);
-    save_bookmarks(&state.data_dir, &bookmarks);
+    state.bookmarks.remove(&url);
+    publish_bookmarks_to_nostr(&state).await;
     Ok(())
 }
 
@@ -970,11 +1106,8 @@ async fn rename_bookmark(
     url: String,
     title: String,
 ) -> Result<(), String> {
-    let mut bookmarks = state.bookmarks.lock().unwrap();
-    if let Some(b) = bookmarks.iter_mut().find(|b| b.url == url) {
-        b.title = title;
-    }
-    save_bookmarks(&state.data_dir, &bookmarks);
+    state.bookmarks.rename(&url, title);
+    publish_bookmarks_to_nostr(&state).await;
     Ok(())
 }
 
@@ -982,8 +1115,7 @@ async fn rename_bookmark(
 async fn list_bookmarks(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<Bookmark>, String> {
-    let bookmarks = state.bookmarks.lock().unwrap();
-    Ok(bookmarks.clone())
+    Ok(state.bookmarks.list())
 }
 
 #[tauri::command]
@@ -991,8 +1123,7 @@ async fn is_bookmarked(
     state: State<'_, Arc<AppState>>,
     url: String,
 ) -> Result<bool, String> {
-    let bookmarks = state.bookmarks.lock().unwrap();
-    Ok(bookmarks.iter().any(|b| b.url == url))
+    Ok(state.bookmarks.contains(&url))
 }
 
 // ── Settings Commands ──
@@ -1778,9 +1909,13 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from(".titan-data"));
 
     let _ = std::fs::create_dir_all(&data_dir);
-    let bookmarks = load_bookmarks(&data_dir);
+    let (bookmark_store, bookmark_load_outcome) = BookmarkStore::load(data_dir.clone());
     let settings = load_settings(&data_dir);
-    info!("loaded {} bookmark(s), settings from {}", bookmarks.len(), data_dir.display());
+    info!(
+        "loaded {} bookmark(s), settings from {}",
+        bookmark_store.list().len(),
+        data_dir.display()
+    );
 
     let first_tab = Tab {
         id: 0,
@@ -1790,6 +1925,17 @@ fn main() {
     };
 
     let signer = Signer::new();
+    // Auto-unlock if an identity exists in the keychain. The OS keychain
+    // already gates access at the user level (login keychain on macOS,
+    // Secret Service on Linux, Credential Manager on Windows), so a
+    // separate in-app unlock step adds friction without adding security.
+    // Manual lock is still available via the signer panel.
+    if signer.has_identity() && !signer.is_unlocked() {
+        match signer.unlock() {
+            Ok(pubkey) => info!("signer auto-unlocked, pubkey={pubkey}"),
+            Err(e) => warn!("signer auto-unlock failed: {e}"),
+        }
+    }
     info!(
         "signer: has_identity={}, unlocked={}",
         signer.has_identity(),
@@ -1802,7 +1948,7 @@ fn main() {
         resolver: OnceCell::new(),
         cache_dir,
         data_dir,
-        bookmarks: std::sync::Mutex::new(bookmarks),
+        bookmarks: bookmark_store,
         settings: std::sync::Mutex::new(settings),
         tabs: std::sync::Mutex::new(vec![first_tab]),
         active_tab: std::sync::Mutex::new(0),
@@ -1812,6 +1958,31 @@ fn main() {
         prompt_queue: PromptQueue::new(),
         audit_log: AuditLog::new(),
     });
+
+    // Bookmark sync: spawn a one-shot startup task that handles three
+    // cases:
+    //   1. Legacy v0.1.4 file → publish a fresh kind 10003 (one-time
+    //      migration), then mark in sync.
+    //   2. New-format file with `pending_publish: true` → an earlier
+    //      session edited bookmarks while offline; flush them now.
+    //   3. New-format file in sync → fetch the latest kind 10003 from
+    //      relays and merge in case another device updated it.
+    //
+    // Runs in the background so it doesn't block window creation. The
+    // bookmarks bar paints from the local cache immediately; the Nostr
+    // sync just refreshes it.
+    {
+        let state = state.clone();
+        let outcome_summary = match &bookmark_load_outcome {
+            LoadOutcome::Empty => "empty",
+            LoadOutcome::NewFormat { .. } => "new",
+            LoadOutcome::Legacy { .. } => "legacy",
+        };
+        info!("bookmark sync: load outcome = {outcome_summary}");
+        tauri::async_runtime::spawn(async move {
+            sync_bookmarks_on_startup(state, bookmark_load_outcome).await;
+        });
+    }
 
     let protocol_state = state.clone();
     let state_for_nostr = state.clone();
@@ -1836,7 +2007,7 @@ fn main() {
                         "/welcome" | "/" => (welcome_page(), "text/html"),
                         "/loading" => (loading_page(), "text/html"),
                         "/bookmarks" => {
-                            let bookmarks = state.bookmarks.lock().unwrap().clone();
+                            let bookmarks = state.bookmarks.list();
                             (bookmarks_page(&bookmarks), "text/html")
                         }
                         p if p.starts_with("/error") => {

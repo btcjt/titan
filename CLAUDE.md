@@ -170,6 +170,7 @@ Blossom: https://blossom.westernbtc.com
 - Site origin read server-side from tab state, never from request body (spoofing defense)
 - Auto-updater via tauri-plugin-updater + minisign signature verification
 - Windows WebView2 workaround: `platform_navigate_url` rewrites `nsite-content://` → `http://nsite-content.` on every navigate call (wry only rewrites at creation time)
+- Titan Bookmarks minted as its own kind (10129, replaceable, `xx129` convention) instead of reusing NIP-51 kind 10003 — clean semantics for `nsite://` URLs, no cross-client tag collisions (see `docs/titan-bookmarks.md`)
 
 ## Registered Names
 
@@ -181,6 +182,7 @@ Blossom: https://blossom.westernbtc.com
 - `docs/architecture.md` — full system architecture (browser, resolver, indexer, nsite, infra)
 - `docs/whitepaper.md` — protocol design and security model
 - `docs/name-protocol.md` — wire format spec + Nostr index event kinds
+- `docs/titan-bookmarks.md` — Titan Bookmarks protocol (kind 10129, private, encrypted)
 - `docs/roadmap.md` — phased build plan with checkboxes
 - `docs/blog-announcement.md` — launch announcement draft
 

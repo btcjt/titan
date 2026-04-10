@@ -498,6 +498,47 @@ impl RelayPool {
         }))
     }
 
+    // ── Titan Bookmarks (kind 10129) ──
+
+    /// Fetch the user's Titan Bookmarks event (kind 10129). Replaceable,
+    /// so we use race-then-linger and pick the newest. Returns None if
+    /// the user has not published a bookmark list yet.
+    ///
+    /// The `kind` argument is passed in by the caller rather than
+    /// hardcoded here so titan-resolver stays agnostic of the specific
+    /// Titan kind numbers (which are defined in docs/titan-bookmarks.md
+    /// and `titan-app/src/bookmarks.rs`).
+    pub async fn fetch_replaceable_event(
+        &self,
+        pubkey: &PublicKey,
+        kind: u16,
+    ) -> Result<Option<Event>, RelayError> {
+        let filter = Filter::new()
+            .author(*pubkey)
+            .kind(Kind::Custom(kind));
+        let events = self.race_fetch(filter).await?;
+        Ok(Self::newest_event(events))
+    }
+
+    /// Publish a pre-signed event to all configured relays. Used by the
+    /// chrome bookmark store to push a new kind 10003 list. Returns the
+    /// number of relays that accepted the event.
+    pub async fn publish_event(&self, event: Event) -> Result<usize, RelayError> {
+        let event_id = event.id;
+        match self.client.send_event(event).await {
+            Ok(output) => {
+                let success = output.success.len();
+                let failed = output.failed.len();
+                debug!(
+                    "published event {} to {} relay(s) ({} failed)",
+                    event_id, success, failed
+                );
+                Ok(success)
+            }
+            Err(e) => Err(RelayError::Fetch(format!("publish: {e}"))),
+        }
+    }
+
     /// Add additional relay URLs to the pool (e.g. from a pubkey's relay list).
     pub async fn add_relays(&self, urls: &[String]) {
         for url in urls {

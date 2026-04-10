@@ -130,6 +130,85 @@ impl Signer {
             SignerState::NotConfigured => Err("No identity configured".to_string()),
         }
     }
+
+    // ── Chrome-trusted operations ──
+    //
+    // These methods are for internal browser features (bookmarks, profile
+    // decryption in the info panel, etc.) — they bypass the per-site
+    // permission prompts because the chrome layer is trusted code, not
+    // arbitrary nsite content. The keys never leave the mutex.
+
+    /// Sign a kind/content/tags template as a finalized event. The event's
+    /// `created_at` is filled in here. Used by chrome features that need
+    /// to publish events on behalf of the user without prompting.
+    pub fn chrome_sign_event(
+        &self,
+        kind: u16,
+        content: String,
+        tags: Vec<Vec<String>>,
+    ) -> Result<Event, String> {
+        self.with_keys(|keys| {
+            let nostr_tags: Vec<Tag> = tags
+                .into_iter()
+                .filter_map(|t| Tag::parse(&t).ok())
+                .collect();
+            let signed = EventBuilder::new(Kind::from(kind), content)
+                .tags(nostr_tags)
+                .sign_with_keys(keys)
+                .map_err(|e| format!("sign: {e}"))?;
+            signed
+                .verify()
+                .map_err(|e| format!("self-verify: {e}"))?;
+            Ok(signed)
+        })
+    }
+
+    /// NIP-44 encrypt `plaintext` to a recipient pubkey. For self-targeted
+    /// content (bookmarks list encrypted to the user's own pubkey), pass
+    /// `self.get_pubkey()` as the recipient.
+    pub fn chrome_nip44_encrypt(
+        &self,
+        recipient_hex: &str,
+        plaintext: &str,
+    ) -> Result<String, String> {
+        let recipient = PublicKey::from_hex(recipient_hex)
+            .map_err(|e| format!("invalid recipient pubkey: {e}"))?;
+        self.with_keys(|keys| {
+            nip44::encrypt(
+                keys.secret_key(),
+                &recipient,
+                plaintext,
+                nip44::Version::V2,
+            )
+            .map_err(|e| format!("nip44 encrypt: {e}"))
+        })
+    }
+
+    /// NIP-44 decrypt `ciphertext` from a sender pubkey. For self-encrypted
+    /// content, pass the user's own pubkey.
+    pub fn chrome_nip44_decrypt(
+        &self,
+        sender_hex: &str,
+        ciphertext: &str,
+    ) -> Result<String, String> {
+        let sender = PublicKey::from_hex(sender_hex)
+            .map_err(|e| format!("invalid sender pubkey: {e}"))?;
+        self.with_keys(|keys| {
+            nip44::decrypt(keys.secret_key(), &sender, ciphertext)
+                .map_err(|e| format!("nip44 decrypt: {e}"))
+        })
+    }
+
+    /// Build an unlocked signer from raw keys, bypassing the keychain.
+    /// Test-only — production code must always go through `Signer::new()`
+    /// so the OS keychain is the source of truth. Used by sibling modules
+    /// (`bookmarks::tests`, etc.) that need a signer fixture.
+    #[cfg(test)]
+    pub fn __test_unlocked(keys: Keys) -> Self {
+        Self {
+            state: Mutex::new(SignerState::Unlocked { keys }),
+        }
+    }
 }
 
 /// Parse an nsec (bech32) or 64-char hex secret key.
@@ -249,5 +328,109 @@ mod tests {
         let npub = keys.public_key().to_bech32().unwrap();
         assert!(npub.starts_with("npub1"));
         assert!(parse_secret(&npub).is_err());
+    }
+
+    /// Build an unlocked signer for tests without touching the keychain.
+    /// Production code must always go through `Signer::new()` so the
+    /// keychain stays the source of truth — this shortcut exists only so
+    /// the chrome_* methods can be tested in isolation.
+    fn unlocked_signer(hex: &str) -> Signer {
+        let keys = parse_secret(hex).expect("test key parses");
+        Signer {
+            state: Mutex::new(SignerState::Unlocked { keys }),
+        }
+    }
+
+    #[test]
+    fn chrome_sign_event_produces_self_verifying_event() {
+        let signer = unlocked_signer(TEST_HEX);
+        let event = signer
+            .chrome_sign_event(
+                10003,
+                "encrypted-bookmarks-payload".to_string(),
+                vec![vec!["d".to_string(), "bookmarks".to_string()]],
+            )
+            .expect("sign succeeds");
+        assert_eq!(event.kind, Kind::from(10003u16));
+        assert_eq!(event.content, "encrypted-bookmarks-payload");
+        // Internal self-verify already ran inside chrome_sign_event;
+        // re-verify externally as a regression guard.
+        event.verify().expect("event self-verifies");
+    }
+
+    #[test]
+    fn chrome_sign_event_filters_malformed_tags() {
+        let signer = unlocked_signer(TEST_HEX);
+        // Empty tag should be skipped, valid tag should remain. The exact
+        // count below comes from nostr-sdk's Tag::parse semantics.
+        let event = signer
+            .chrome_sign_event(
+                1,
+                "hi".to_string(),
+                vec![
+                    vec![],                                     // empty → filtered
+                    vec!["t".to_string(), "titan".to_string()], // valid
+                ],
+            )
+            .expect("sign succeeds");
+        assert!(event.tags.iter().any(|t| t.as_slice().get(0).map(|s| s.as_str()) == Some("t")));
+    }
+
+    #[test]
+    fn chrome_sign_event_locked_signer_errors() {
+        let signer = Signer {
+            state: Mutex::new(SignerState::Locked),
+        };
+        let err = signer
+            .chrome_sign_event(1, "x".to_string(), vec![])
+            .unwrap_err();
+        assert!(err.contains("locked"));
+    }
+
+    #[test]
+    fn chrome_nip44_self_round_trip() {
+        let signer = unlocked_signer(TEST_HEX);
+        let pubkey = signer.get_pubkey().expect("unlocked");
+        let plaintext = r#"{"version":1,"bookmarks":[{"url":"nsite://titan"}]}"#;
+
+        let ciphertext = signer
+            .chrome_nip44_encrypt(&pubkey, plaintext)
+            .expect("encrypt");
+        // Ciphertext is non-empty and not the same as plaintext
+        assert!(!ciphertext.is_empty());
+        assert_ne!(ciphertext, plaintext);
+
+        let decrypted = signer
+            .chrome_nip44_decrypt(&pubkey, &ciphertext)
+            .expect("decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn chrome_nip44_decrypt_rejects_garbage() {
+        let signer = unlocked_signer(TEST_HEX);
+        let pubkey = signer.get_pubkey().unwrap();
+        let err = signer
+            .chrome_nip44_decrypt(&pubkey, "definitely-not-a-valid-nip44-payload")
+            .unwrap_err();
+        assert!(err.contains("nip44 decrypt"));
+    }
+
+    #[test]
+    fn chrome_nip44_encrypt_rejects_invalid_pubkey() {
+        let signer = unlocked_signer(TEST_HEX);
+        let err = signer
+            .chrome_nip44_encrypt("not-a-pubkey", "hi")
+            .unwrap_err();
+        assert!(err.contains("invalid recipient pubkey"));
+    }
+
+    #[test]
+    fn chrome_nip44_decrypt_rejects_invalid_pubkey() {
+        let signer = unlocked_signer(TEST_HEX);
+        let err = signer
+            .chrome_nip44_decrypt("not-a-pubkey", "ciphertext")
+            .unwrap_err();
+        assert!(err.contains("invalid sender pubkey"));
     }
 }

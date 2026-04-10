@@ -172,6 +172,29 @@ impl Resolver {
         Ok(self.relays.fetch_relay_list_detailed(&pk).await?)
     }
 
+    /// Fetch the newest replaceable event of `kind` authored by `pubkey`.
+    /// Used by titan-app's bookmark store to pull its kind 10129 event.
+    /// The caller is responsible for decrypting `.content` if the event
+    /// uses NIP-44-encrypted private items.
+    pub async fn fetch_replaceable_event(
+        &self,
+        pubkey: &[u8; 32],
+        kind: u16,
+    ) -> Result<Option<nostr_sdk::Event>, ResolverError> {
+        let pk = PublicKey::from_slice(pubkey)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+        Ok(self.relays.fetch_replaceable_event(&pk, kind).await?)
+    }
+
+    /// Publish a pre-signed event to all configured relays.
+    /// Returns the number of relays that accepted it.
+    pub async fn publish_event(
+        &self,
+        event: nostr_sdk::Event,
+    ) -> Result<usize, ResolverError> {
+        Ok(self.relays.publish_event(event).await?)
+    }
+
     /// Resolve a pubkey + path to content bytes.
     ///
     /// `site_name` controls which manifest kind is queried:

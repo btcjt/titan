@@ -26,6 +26,13 @@ pub fn set_app_handle(handle: AppHandle) {
     let _ = APP_HANDLE.set(handle);
 }
 
+/// Borrow the global app handle if it has been set. Background tasks
+/// (e.g. bookmark sync) use this to emit chrome events without having
+/// to thread an `AppHandle` through every call site.
+pub fn app_handle() -> Option<&'static AppHandle> {
+    APP_HANDLE.get()
+}
+
 /// Buffer for log events emitted *before* the app handle is set. Replayed
 /// once the handle becomes available.
 static PENDING: OnceLock<Arc<std::sync::Mutex<Vec<RustLogPayload>>>> = OnceLock::new();

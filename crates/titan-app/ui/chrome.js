@@ -644,6 +644,24 @@ document.getElementById("update-banner-dismiss").addEventListener("click", hideU
 document.getElementById("settings-check-update").addEventListener("click", () => checkForUpdate(true));
 document.getElementById("settings-open-console").addEventListener("click", () => openPanel("console"));
 
+// Show the OS-appropriate keyboard shortcut next to the "Open developer
+// console" button. Mac uses Cmd+Opt+K to match its own devtools
+// convention; other OSes use Ctrl+Shift+K.
+(function setConsoleShortcutHint() {
+  const hintEl = document.getElementById("settings-console-shortcut");
+  if (!hintEl) return;
+  // Prefer userAgentData where available (Chromium 90+); fall back to
+  // sniffing the UA string. `navigator.platform` is deprecated so we
+  // avoid it entirely.
+  const uaPlatform =
+    (navigator.userAgentData && navigator.userAgentData.platform) || "";
+  const ua = navigator.userAgent || "";
+  const isMac =
+    uaPlatform.toLowerCase().includes("mac") ||
+    /\bMac OS X\b|\bMacintosh\b/.test(ua);
+  hintEl.textContent = isMac ? "⌘⌥K" : "Ctrl+Shift+K";
+})();
+
 // ── Signer Panel ──
 
 async function renderSignerPanel() {
@@ -1259,6 +1277,17 @@ listen("focus-address-bar", () => {
 
 listen("toggle-bookmark", () => {
   toggleBookmark();
+});
+
+// Bookmarks changed on the Rust side — usually after a Nostr sync pulled
+// in updates from another device, or after the legacy v0.1.4 file was
+// migrated to NIP-51 kind 10003. Refresh the bookmarks panel if it's
+// open and re-check the star icon for the current tab.
+listen("bookmarks-changed", () => {
+  if (activePanel === "bookmarks") {
+    renderBookmarks();
+  }
+  updateStarState();
 });
 
 listen("nsite-link-clicked", (event) => {

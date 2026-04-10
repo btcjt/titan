@@ -129,6 +129,7 @@ Nix users: `direnv allow` first
 - [Architecture](docs/architecture.md) — system design, resolution flow, event kinds
 - [Whitepaper](docs/whitepaper.md) — protocol design and security model
 - [Name Protocol](docs/name-protocol.md) — wire format, UTXO ownership, Nostr index
+- [Titan Bookmarks](docs/titan-bookmarks.md) — private cross-device bookmark sync (kind 10129)
 - [Roadmap](docs/roadmap.md) — build phases and status
 
 ## License
