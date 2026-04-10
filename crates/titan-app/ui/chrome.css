@@ -584,6 +584,40 @@ body.panel-open #update-banner {
   z-index: 10;
 }
 
+/* Drag handle for resizing the side panel. Sits on the inside of the
+   left edge so it can overlap the border-left without the resize
+   cursor ending at the 1px line. */
+#side-panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 11;
+  /* Invisible by default; a subtle amber hint shows on hover. */
+  background: transparent;
+  transition: background 80ms ease;
+}
+
+#side-panel-resize:hover,
+#side-panel-resize.dragging {
+  background: var(--amber-dim);
+}
+
+body.panel-resizing {
+  /* Force the ew-resize cursor across the entire window while the
+     user is dragging, otherwise it reverts to the default when the
+     mouse leaves the 6px handle strip. */
+  cursor: ew-resize !important;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body.panel-resizing * {
+  cursor: ew-resize !important;
+}
+
 #panel-header {
   display: flex;
   align-items: center;
@@ -1077,6 +1111,149 @@ body.panel-console #panel-console {
   flex-direction: column;
 }
 
+/* Tab strip: horizontal row of Logs / Network / Application buttons.
+   min-width: 0 so the strip can shrink inside its flex parent without
+   forcing horizontal scroll; overflow hidden as a last-resort defense
+   (users with a narrow panel should drag it wider anyway). */
+#devtools-tabs {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.devtools-tab {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  padding: 6px 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.3px;
+  /* Let tab buttons shrink so they don't overflow when the panel
+     gets narrow. Min-width 0 + flex-shrink 1 lets the label truncate. */
+  min-width: 0;
+  flex-shrink: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.devtools-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-input);
+}
+
+.devtools-tab.active {
+  color: var(--amber);
+  background: var(--bg-primary);
+  border-bottom: 2px solid var(--amber);
+  margin-bottom: -1px;
+}
+
+.devtools-tab-badge {
+  background: var(--amber);
+  color: var(--bg-primary);
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 14px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.devtools-tab-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  padding-right: 6px;
+  gap: 4px;
+}
+
+.devtools-tab-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+}
+
+.devtools-tab-action:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Tab body: each pane fills the remaining space, flex column so inner
+   scroll containers know their height. */
+.devtools-tab-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Logs toolbar: level + target filter row pinned above the log list */
+#logs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+#logs-level-filter {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  outline: none;
+  flex-shrink: 0;
+}
+
+#logs-target-filter {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  outline: none;
+}
+
+#logs-target-filter::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 10px;
+}
+
+#logs-hidden-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 #console-log {
   flex: 1;
   min-height: 0;
@@ -1088,6 +1265,12 @@ body.panel-console #panel-console {
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
+}
+
+/* Hide filtered-out entries. Using display:none keeps them in the
+   DOM so future filter changes can re-reveal without re-rendering. */
+.console-entry.log-hidden {
+  display: none;
 }
 
 #console-input-wrap {
@@ -1181,6 +1364,322 @@ body.panel-console #panel-console {
 .console-time {
   color: var(--text-muted);
   margin-right: 6px;
+}
+
+/* ── Network tab ── */
+
+#network-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+
+.network-record-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+#network-filter {
+  flex: 1;
+  max-width: 280px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 3px 8px;
+  outline: none;
+}
+
+#network-filter::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+#network-stats {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+#network-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+}
+
+#network-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  table-layout: fixed;
+}
+
+#network-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-tertiary);
+  z-index: 1;
+}
+
+#network-table th {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+.col-method { width: 58px; }
+.col-status { width: 58px; }
+.col-type { width: 80px; }
+.col-time { width: 64px; text-align: right; }
+
+#network-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+#network-table tr:hover td {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+#network-table tr.selected td {
+  background: var(--bg-input);
+  color: var(--amber);
+}
+
+.net-method {
+  font-weight: 600;
+}
+
+.net-method.GET { color: #7aa; }
+.net-method.POST { color: #aa7; }
+.net-method.PUT { color: #a7a; }
+.net-method.DELETE { color: #c66; }
+.net-method.WS { color: var(--amber); }
+
+.net-status-ok { color: var(--text-secondary); }
+.net-status-pending { color: var(--text-muted); font-style: italic; }
+.net-status-err { color: #c66; }
+
+.col-time.net-slow { color: #cb6; }
+
+#network-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+#network-detail {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  padding: 10px 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+}
+
+.net-detail-section {
+  margin-bottom: 10px;
+}
+
+.net-detail-label {
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+  font-weight: 500;
+}
+
+.net-detail-value {
+  color: var(--text-primary);
+  word-break: break-all;
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.net-detail-headers {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.net-detail-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.net-detail-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: -apple-system, system-ui, sans-serif;
+}
+
+.net-detail-btn:hover {
+  color: var(--amber);
+  border-color: var(--text-muted);
+}
+
+.net-detail-close {
+  margin-left: auto;
+}
+
+/* ── Application tab ── */
+
+#application-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+
+.application-origin-label {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.application-section {
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#devtools-tab-application {
+  overflow-y: auto;
+}
+
+.application-section-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.application-section-header span {
+  flex: 1;
+}
+
+.application-clear-all {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.application-clear-all:hover {
+  color: #c66;
+  border-color: #c66;
+}
+
+.application-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  table-layout: fixed;
+}
+
+.application-table th {
+  display: none;
+}
+
+.application-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  vertical-align: top;
+  word-break: break-all;
+}
+
+.application-table td:first-child {
+  color: var(--amber);
+  width: 30%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.application-table td:nth-child(2) {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.application-table td:last-child {
+  width: 30px;
+  text-align: right;
+}
+
+.application-row-delete {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.application-row-delete:hover {
+  color: #c66;
+}
+
+.application-empty {
+  padding: 10px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: italic;
 }
 
 /* ── Settings ── */

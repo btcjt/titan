@@ -165,15 +165,75 @@ Titan ships with a built-in signer that injects `window.nostr` into every conten
 - [ ] Encrypted file fallback (master password) when keychain unavailable
 - [ ] Auto-lock after N minutes of inactivity (configurable)
 
-**Tests** (156 total in workspace, 106 in titan-app)
-- [x] signer::parse_secret (8 tests)
-- [x] nip07::sign_event and nip04/nip44 round-trips (14 tests)
-- [x] permissions (19 tests: scope matching, persistence, revoke, edge cases)
-- [x] prompt_queue (8 tests: push/resolve, deny_all, ordering, per-site + global caps)
-- [x] log_forward (4 tests)
-- [x] audit_log (6 tests)
-- [x] main.rs helpers (30+ tests: url_decode, base36, content_url_to_display, etc.)
-- [x] helpers.js (20 tests for escapeHtml, escapeAttr, isSafeHttpUrl, isHex)
+**Tests** (as of v0.1.7: 222 Rust + 64 JS = 286 total, zero failures)
+- [x] titan-app: 172 tests
+  - signer::parse_secret + chrome_sign_event + chrome_nip44 (15)
+  - nip07::sign_event and nip04/nip44 round-trips (14)
+  - permissions (19 tests: scope matching, persistence, revoke, edge cases)
+  - prompt_queue (8 tests: push/resolve, deny_all, ordering, per-site + global caps)
+  - log_forward (4)
+  - audit_log (6)
+  - bookmarks (12: NIP-51 encode/decode, migration, round-trip)
+  - devtools (28: ring buffer, recording toggle, JS event parsing + adversarial concurrency / unicode / injection)
+  - main.rs helpers + settings clamp (40+: url_decode, base36, content_url_to_display, settings round-trip)
+- [x] titan-bitcoin: 32 tests
+- [x] titan-resolver: 14 tests
+- [x] titan-types: 4 tests
+- [x] helpers.js Node suite: 64 tests (escapeHtml, escapeAttr, isSafeHttpUrl, isHex, buildCurlCommand, shellQuote, all with adversarial XSS/shell-injection/unicode cases)
+
+## Phase 11: Developer Tools (v0.1.7)
+
+Three-tab dev console built on the existing panel infrastructure.
+Goal: give nsite developers enough visibility to diagnose Nostr
+fetches, signer calls, and page-level HTTP without reaching for
+external tools.
+
+**Tabs**
+- [x] Logs — Rust tracing events + content console forwarding + JS REPL (existing behavior)
+- [x] Network — captured requests from Rust protocol handlers + injected fetch/XHR/WebSocket wrappers
+- [x] Application — live localStorage / sessionStorage / cookies viewer for the active content webview
+
+**Logs tab improvements**
+- [x] Level filter (All / Debug+ / Info+ / Warn+ / Errors); default is Info+ to hide cache/trace spam
+- [x] Source filter (substring match against the Rust target, e.g. "titan_resolver")
+- [x] Smart auto-scroll: only sticks to the bottom if the user wasn't scrolled up reading something
+- [x] Filtered-count indicator ("N hidden")
+
+**Network tab**
+- [x] Ring buffer capped at 500 events (oldest evicted on overflow)
+- [x] Rust-side capture: every `nsite-content://` and `titan-nostr://` request with method, URL, status, resource type, duration
+- [x] JS-side capture: wrappers on `window.fetch`, `XMLHttpRequest`, and `WebSocket` inject at page load, report back via `titan-cmd://net-event/<json>`
+- [x] Row detail: general info, request + response headers, optional request body
+- [x] Copy as cURL button (tested against bash shellQuote semantics)
+- [x] Copy URL button
+- [x] Method-colored badges (GET / POST / PUT / DELETE / WS)
+- [x] Status code coloring (2xx muted, 4xx+ red, pending italic)
+- [x] Slow-request highlight (> 500ms in amber)
+- [x] URL filter input
+- [x] Recording toggle (checkbox in toolbar)
+- [x] Clear button
+- [x] Tab badge with live count
+- [x] No response body capture in v1 (too expensive, can use REPL to fetch explicitly)
+- [x] No `<img>`/`<link>` resource tracking in v1 (acceptable limitation)
+
+**Application tab**
+- [x] Local Storage / Session Storage / Cookies sections
+- [x] Origin label at the top
+- [x] Per-row delete button
+- [x] Per-section "Clear all" with confirmation
+- [x] Refresh button (re-reads via webview.eval round trip)
+
+**Side panel resize**
+- [x] 6px drag handle on left edge
+- [x] Clamped to [280px, 1400px] at both Rust (save) and JS (drag) layers
+- [x] Width persisted via dedicated `update_side_panel_width` command
+- [x] Applied on startup before any panel opens
+- [x] Throttled to rAF during drag so Rust IPC doesn't get hammered
+- [x] All margin-right offsets on chrome elements driven by `--panel-width` CSS var
+
+**Known limitations (acceptable for v1)**
+- fetch/XHR/WebSocket wrappers inject on `page_load`, so requests initiated by scripts in `<head>` before the page finishes loading may be missed
+- Content webview access happens via `webview.eval()` which has an implicit round-trip latency; fine for interactive use, not suitable for a high-frequency storage dashboard
 
 ## Future
 

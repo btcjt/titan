@@ -105,9 +105,19 @@ titan/
 
 ## Status
 
-Phases 1–9 complete. Phase 10 (built-in signer) is mostly done — key management, `window.nostr` bridge, per-site permission model with approval prompts, permission management UI, in-memory audit log, `getRelays` plumbing, and a hardened content CSP. Auto-lock and encrypted file fallback remain. See [docs/roadmap.md](docs/roadmap.md).
+Phases 1–10 complete. Phase 11 (developer tools) shipped in v0.1.7 — three-tab dev console (Logs, Network, Application), ring-buffered network log with copy-as-cURL, localStorage/sessionStorage/cookies viewer, drag-to-resize side panel, and level/source filters on the Rust log stream. Auto-lock and encrypted file fallback remain on the signer side. See [docs/roadmap.md](docs/roadmap.md).
 
 `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads as the browser's default homepage. Name lookups via Nostr relays with race-then-linger search. No Bitcoin Core required.
+
+### Developer tools
+
+Press `⌘⌥K` on macOS or `Ctrl+Shift+K` elsewhere to open the dev console. Three tabs:
+
+- **Logs** — Rust tracing events + content-page `console.*` calls + a JavaScript REPL that evaluates against the active tab. Level + source filters keep the signal-to-noise ratio sane.
+- **Network** — every `nsite-content://`, `titan-nostr://`, `fetch()`, `XMLHttpRequest`, and `WebSocket` request. Click a row for headers and request body, then "Copy as cURL" to reproduce it from a terminal.
+- **Application** — live view of `localStorage`, `sessionStorage`, and cookies for the active tab. Delete individual keys or clear each kind entirely.
+
+Drag the left edge of the dev console panel to resize it. The width persists across sessions.
 
 **Installing an unsigned macOS build?** Gatekeeper blocks the DMG on first open. Clear the quarantine attribute from the downloaded DMG **before** mounting it:
 

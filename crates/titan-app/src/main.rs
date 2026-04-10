@@ -10,6 +10,7 @@
 
 mod audit_log;
 mod bookmarks;
+mod devtools;
 mod log_forward;
 mod nip07;
 mod permissions;
@@ -140,6 +141,19 @@ struct Settings {
     indexer_pubkey: String,
     /// Default homepage
     homepage: String,
+    /// Side panel width in CSS pixels. Persisted across sessions so a
+    /// user who dragged it wider (e.g. for the dev console) stays at
+    /// that size. Clamped at load time to the sane range below.
+    #[serde(default = "default_side_panel_width")]
+    side_panel_width: u32,
+}
+
+const DEFAULT_SIDE_PANEL_WIDTH: u32 = 280;
+const MIN_SIDE_PANEL_WIDTH: u32 = 280;
+const MAX_SIDE_PANEL_WIDTH: u32 = 1400;
+
+fn default_side_panel_width() -> u32 {
+    DEFAULT_SIDE_PANEL_WIDTH
 }
 
 impl Default for Settings {
@@ -159,6 +173,7 @@ impl Default for Settings {
             ],
             indexer_pubkey: "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44".to_string(),
             homepage: "titan".to_string(),
+            side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
         }
     }
 }
@@ -177,6 +192,7 @@ struct AppState {
     permissions: Permissions,
     prompt_queue: PromptQueue,
     audit_log: AuditLog,
+    devtools: devtools::DevtoolsState,
 }
 
 impl AppState {
@@ -736,6 +752,171 @@ async fn signer_clear_audit_log(
     Ok(())
 }
 
+// ── Devtools Commands ──
+
+#[tauri::command]
+async fn devtools_network_snapshot(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<devtools::NetworkEvent>, String> {
+    Ok(state.devtools.snapshot())
+}
+
+#[tauri::command]
+async fn devtools_network_clear(
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.devtools.clear();
+    Ok(())
+}
+
+#[tauri::command]
+async fn devtools_set_network_recording(
+    state: State<'_, Arc<AppState>>,
+    recording: bool,
+) -> Result<(), String> {
+    state.devtools.set_recording(recording);
+    Ok(())
+}
+
+#[tauri::command]
+async fn devtools_get_network_recording(
+    state: State<'_, Arc<AppState>>,
+) -> Result<bool, String> {
+    Ok(state.devtools.is_recording())
+}
+
+/// Read localStorage + sessionStorage + cookies from the active tab's
+/// content webview. Works by injecting a small JS reader via
+/// `webview.eval()` that serializes the storage state into a titan-cmd
+/// URL and clicks a synthetic anchor to send it back. The result
+/// arrives asynchronously as a `devtools-storage` Tauri event; the UI
+/// caller awaits that event after invoking this command.
+#[tauri::command]
+async fn devtools_read_storage(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let label = active_webview_label(&state).ok_or("No active tab")?;
+    let wv = app.get_webview(&label).ok_or("Active tab not found")?;
+
+    // JS reader: collect localStorage + sessionStorage + cookies and
+    // POST the result back as JSON via titan-cmd://devtools-storage/
+    // The navigation handler parses the body and emits the Tauri
+    // event that the UI listens for. We wrap the whole thing in a
+    // try/catch so a single exception can't break the reader.
+    let reader = r#"(function() {
+        function collect(storage) {
+            var out = [];
+            try {
+                for (var i = 0; i < storage.length; i++) {
+                    var k = storage.key(i);
+                    try { out.push([k, storage.getItem(k)]); }
+                    catch (e) { out.push([k, '[unreadable]']); }
+                }
+            } catch (e) {}
+            return out;
+        }
+        function parseCookies() {
+            var out = [];
+            try {
+                var raw = document.cookie || '';
+                if (!raw) return out;
+                var parts = raw.split(';');
+                for (var i = 0; i < parts.length; i++) {
+                    var p = parts[i].trim();
+                    var eq = p.indexOf('=');
+                    if (eq < 0) out.push([p, '']);
+                    else out.push([p.slice(0, eq), p.slice(eq + 1)]);
+                }
+            } catch (e) {}
+            return out;
+        }
+        var payload;
+        try {
+            payload = {
+                origin: location.origin || '',
+                href: location.href || '',
+                local: collect(window.localStorage),
+                session: collect(window.sessionStorage),
+                cookies: parseCookies(),
+            };
+        } catch (e) {
+            payload = { origin: '', href: '', local: [], session: [], cookies: [], error: String(e) };
+        }
+        var a = document.createElement('a');
+        a.href = 'titan-cmd://devtools-storage/' + encodeURIComponent(JSON.stringify(payload));
+        a.click();
+    })();"#;
+
+    wv.eval(reader).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Delete a single key from localStorage / sessionStorage / cookies
+/// in the active tab's content webview. `kind` must be one of
+/// "local", "session", or "cookie".
+#[tauri::command]
+async fn devtools_delete_storage_key(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    kind: String,
+    key: String,
+) -> Result<(), String> {
+    let label = active_webview_label(&state).ok_or("No active tab")?;
+    let wv = app.get_webview(&label).ok_or("Active tab not found")?;
+    // Serialize the key through serde so any quotes or backslashes
+    // get escaped safely before interpolation.
+    let key_json = serde_json::to_string(&key).map_err(|e| e.to_string())?;
+    let code = match kind.as_str() {
+        "local" => format!("try {{ window.localStorage.removeItem({key_json}); }} catch (e) {{}}"),
+        "session" => {
+            format!("try {{ window.sessionStorage.removeItem({key_json}); }} catch (e) {{}}")
+        }
+        "cookie" => {
+            // Expire by setting an already-past date on the same path
+            format!(
+                "try {{ document.cookie = {key_json} + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; }} catch (e) {{}}"
+            )
+        }
+        _ => return Err(format!("unknown storage kind: {kind}")),
+    };
+    wv.eval(&code).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Clear an entire storage kind ("local", "session", or "cookies")
+/// in the active tab's content webview. Used by the "Clear all"
+/// buttons in the Application tab headers.
+#[tauri::command]
+async fn devtools_clear_storage(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    kind: String,
+) -> Result<(), String> {
+    let label = active_webview_label(&state).ok_or("No active tab")?;
+    let wv = app.get_webview(&label).ok_or("Active tab not found")?;
+    let code = match kind.as_str() {
+        "localStorage" => "try { window.localStorage.clear(); } catch (e) {}".to_string(),
+        "sessionStorage" => "try { window.sessionStorage.clear(); } catch (e) {}".to_string(),
+        "cookies" => {
+            // Expire every cookie on the current origin. Best-effort:
+            // cookies scoped to a different path won't all clear.
+            r#"try {
+                var cookies = (document.cookie || '').split(';');
+                for (var i = 0; i < cookies.length; i++) {
+                    var eq = cookies[i].indexOf('=');
+                    var name = eq > -1 ? cookies[i].substr(0, eq).trim() : cookies[i].trim();
+                    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+                }
+            } catch (e) {}"#
+                .to_string()
+        }
+        _ => return Err(format!("unknown storage kind: {kind}")),
+    };
+    wv.eval(&code).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── Site Info ──
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -896,10 +1077,21 @@ fn settings_path(data_dir: &PathBuf) -> PathBuf {
 
 fn load_settings(data_dir: &PathBuf) -> Settings {
     let path = settings_path(data_dir);
-    match std::fs::read_to_string(&path) {
+    let mut settings: Settings = match std::fs::read_to_string(&path) {
         Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
         Err(_) => Settings::default(),
+    };
+    // Clamp the loaded side panel width so a hand-edited settings.json
+    // can't render the panel unusable. Values below MIN_SIDE_PANEL_WIDTH
+    // (e.g. 0 from a malformed file) get bumped up to the default; the
+    // max is a soft cap to stop a runaway value from shoving the
+    // content webview entirely off-screen.
+    if settings.side_panel_width < MIN_SIDE_PANEL_WIDTH
+        || settings.side_panel_width > MAX_SIDE_PANEL_WIDTH
+    {
+        settings.side_panel_width = DEFAULT_SIDE_PANEL_WIDTH;
     }
+    settings
 }
 
 fn save_settings(data_dir: &PathBuf, settings: &Settings) {
@@ -1145,6 +1337,24 @@ async fn update_settings(
     *current = settings;
     save_settings(&state.data_dir, &current);
     Ok(())
+}
+
+/// Update just the side panel width. Called from the JS drag-to-resize
+/// handler so it can persist the new size without round-tripping the
+/// whole Settings struct (which would race with concurrent edits from
+/// the Settings panel). The width is clamped to the sane range so a
+/// hostile caller can't make the panel invisible or push the content
+/// off-screen.
+#[tauri::command]
+async fn update_side_panel_width(
+    state: State<'_, Arc<AppState>>,
+    width: u32,
+) -> Result<u32, String> {
+    let clamped = width.clamp(MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH);
+    let mut current = state.settings.lock().unwrap();
+    current.side_panel_width = clamped;
+    save_settings(&state.data_dir, &current);
+    Ok(clamped)
 }
 
 // ── Host Parsing ──
@@ -1780,6 +1990,38 @@ fn create_tab_webview(
                             });
                         }
                     }
+                    "net-event" => {
+                        // Network capture from injected JS wrapper:
+                        // titan-cmd://net-event/<encoded-json>
+                        // The payload is a JSON object with url/method/
+                        // status/etc. We parse it, stamp the tab label,
+                        // and push into the devtools ring buffer. If
+                        // the console panel is open with the Network
+                        // tab active, the UI listens for a follow-up
+                        // devtools-network-updated event and repaints.
+                        let path = url.path();
+                        let encoded = path.strip_prefix('/').unwrap_or(path);
+                        let json = url_decode(encoded);
+                        if let Some(state) = handle.try_state::<Arc<AppState>>() {
+                            if let Some(event) = devtools::parse_js_event(&json, &label_nav) {
+                                state.devtools.record_event(event);
+                                let _ = handle.emit("devtools-network-updated", ());
+                            }
+                        }
+                    }
+                    "devtools-storage" => {
+                        // Storage reader response:
+                        // titan-cmd://devtools-storage/<encoded-json>
+                        // The payload is already the full snapshot
+                        // object that the UI wants; we just forward
+                        // it as the `devtools-storage` Tauri event.
+                        let path = url.path();
+                        let encoded = path.strip_prefix('/').unwrap_or(path);
+                        let json = url_decode(encoded);
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) {
+                            let _ = handle.emit("devtools-storage", value);
+                        }
+                    }
                     c if c.starts_with("tab-") => {
                         if let Ok(n) = c[4..].parse::<u32>() {
                             let _ = handle.emit("switch-tab-number", n);
@@ -1874,6 +2116,245 @@ fn create_tab_webview(
                             fwd('error', ['Unhandled rejection: ' + (e.reason || '')]);
                         });
                     })();
+
+                    // ── Network capture ──
+                    //
+                    // Wraps fetch / XMLHttpRequest / WebSocket at page
+                    // load so the Network tab can see what the page is
+                    // doing. Wrappers report metadata (URL, method,
+                    // status, timing, headers) back to chrome via
+                    // titan-cmd://net-event/<encoded-json>. Response
+                    // bodies are NOT captured — cloning every response
+                    // would double memory for every request and we
+                    // don't have a UX for large body previews yet.
+                    //
+                    // This always runs regardless of whether the user
+                    // has the Network tab open — the overhead is a
+                    // ~microsecond per wrapped call and the chrome
+                    // side enforces the recording toggle + ring buffer.
+                    (function() {
+                        if (window.__titanNetHooked) return;
+                        window.__titanNetHooked = true;
+
+                        // Report a completed event to chrome. We build
+                        // an anchor and click it rather than calling
+                        // fetch(), so we don't recursively capture our
+                        // own reports.
+                        function report(event) {
+                            try {
+                                var json = JSON.stringify(event);
+                                // Truncate really huge bodies before
+                                // encoding so titan-cmd URLs don't
+                                // blow up (the Rust side also caps).
+                                if (event.request_body && event.request_body.length > 8192) {
+                                    event.request_body = event.request_body.slice(0, 8192) + '...[truncated]';
+                                    json = JSON.stringify(event);
+                                }
+                                var a = document.createElement('a');
+                                a.href = 'titan-cmd://net-event/' + encodeURIComponent(json);
+                                a.click();
+                            } catch (_) {}
+                        }
+
+                        // Guess a resource type from a URL + Content-Type.
+                        // Mirrors the Rust-side classifier.
+                        function classifyType(url, contentType) {
+                            var ct = (contentType || '').toLowerCase();
+                            if (ct.indexOf('text/html') === 0) return 'document';
+                            if (ct.indexOf('text/css') === 0) return 'stylesheet';
+                            if (ct.indexOf('javascript') !== -1) return 'script';
+                            if (ct.indexOf('image/') === 0) return 'image';
+                            if (ct.indexOf('font/') === 0 || ct.indexOf('font') !== -1) return 'font';
+                            if (ct.indexOf('application/json') === 0) return 'fetch';
+                            // Fall back to URL extension
+                            try {
+                                var u = new URL(url, location.href);
+                                var p = u.pathname.toLowerCase();
+                                if (/\.(html?|htm)$/.test(p)) return 'document';
+                                if (/\.css$/.test(p)) return 'stylesheet';
+                                if (/\.(js|mjs)$/.test(p)) return 'script';
+                                if (/\.(png|jpe?g|gif|svg|webp|ico)$/.test(p)) return 'image';
+                                if (/\.(woff2?|ttf|otf)$/.test(p)) return 'font';
+                            } catch (_) {}
+                            return 'fetch';
+                        }
+
+                        // Extract an absolute URL from a fetch() input
+                        // (string or Request object).
+                        function inputToUrl(input) {
+                            try {
+                                if (typeof input === 'string') return new URL(input, location.href).href;
+                                if (input && input.url) return input.url;
+                            } catch (_) {}
+                            return String(input);
+                        }
+
+                        // ── fetch wrapper ──
+                        var origFetch = window.fetch;
+                        if (typeof origFetch === 'function') {
+                            window.fetch = function(input, init) {
+                                var started = performance.now();
+                                var url = inputToUrl(input);
+                                var method = ((init && init.method) ||
+                                    (input && input.method) || 'GET').toUpperCase();
+
+                                // Capture outgoing headers if present.
+                                var reqHeaders = [];
+                                try {
+                                    if (init && init.headers) {
+                                        if (init.headers instanceof Headers) {
+                                            init.headers.forEach(function(v, k) { reqHeaders.push([k, v]); });
+                                        } else if (Array.isArray(init.headers)) {
+                                            reqHeaders = init.headers.slice();
+                                        } else if (typeof init.headers === 'object') {
+                                            for (var k in init.headers) reqHeaders.push([k, init.headers[k]]);
+                                        }
+                                    }
+                                } catch (_) {}
+
+                                // Capture request body (string only for
+                                // copy-as-cURL reconstruction).
+                                var reqBody = null;
+                                try {
+                                    if (init && typeof init.body === 'string') reqBody = init.body;
+                                } catch (_) {}
+
+                                return origFetch.apply(this, arguments).then(function(resp) {
+                                    var duration = Math.round(performance.now() - started);
+                                    var respHeaders = [];
+                                    try {
+                                        resp.headers.forEach(function(v, k) { respHeaders.push([k, v]); });
+                                    } catch (_) {}
+                                    var ct = '';
+                                    try { ct = resp.headers.get('content-type') || ''; } catch (_) {}
+                                    report({
+                                        method: method,
+                                        url: url,
+                                        status: resp.status,
+                                        resource_type: classifyType(url, ct),
+                                        duration_ms: duration,
+                                        request_headers: reqHeaders,
+                                        response_headers: respHeaders,
+                                        request_body: reqBody,
+                                    });
+                                    return resp;
+                                }, function(err) {
+                                    var duration = Math.round(performance.now() - started);
+                                    report({
+                                        method: method,
+                                        url: url,
+                                        status: 0,
+                                        resource_type: 'fetch',
+                                        duration_ms: duration,
+                                        request_headers: reqHeaders,
+                                        request_body: reqBody,
+                                        error: String(err && err.message || err),
+                                    });
+                                    throw err;
+                                });
+                            };
+                        }
+
+                        // ── XHR wrapper ──
+                        var origOpen = window.XMLHttpRequest.prototype.open;
+                        var origSend = window.XMLHttpRequest.prototype.send;
+                        var origSetHeader = window.XMLHttpRequest.prototype.setRequestHeader;
+
+                        window.XMLHttpRequest.prototype.open = function(method, url) {
+                            this.__titanNet = {
+                                method: (method || 'GET').toUpperCase(),
+                                url: (function() {
+                                    try { return new URL(url, location.href).href; }
+                                    catch (_) { return String(url); }
+                                })(),
+                                started: 0,
+                                req_headers: [],
+                                body: null,
+                            };
+                            return origOpen.apply(this, arguments);
+                        };
+
+                        window.XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+                            if (this.__titanNet) this.__titanNet.req_headers.push([k, v]);
+                            return origSetHeader.apply(this, arguments);
+                        };
+
+                        window.XMLHttpRequest.prototype.send = function(body) {
+                            var self = this;
+                            var meta = self.__titanNet;
+                            if (meta) {
+                                meta.started = performance.now();
+                                if (typeof body === 'string') meta.body = body;
+                                self.addEventListener('loadend', function() {
+                                    var respHeaders = [];
+                                    try {
+                                        var raw = self.getAllResponseHeaders() || '';
+                                        raw.trim().split(/\r?\n/).forEach(function(line) {
+                                            var idx = line.indexOf(':');
+                                            if (idx > 0) respHeaders.push([line.slice(0, idx).trim(), line.slice(idx + 1).trim()]);
+                                        });
+                                    } catch (_) {}
+                                    var ct = '';
+                                    try { ct = self.getResponseHeader('content-type') || ''; } catch (_) {}
+                                    report({
+                                        method: meta.method,
+                                        url: meta.url,
+                                        status: self.status || 0,
+                                        resource_type: classifyType(meta.url, ct),
+                                        duration_ms: Math.round(performance.now() - meta.started),
+                                        request_headers: meta.req_headers,
+                                        response_headers: respHeaders,
+                                        request_body: meta.body,
+                                        error: (self.status === 0 ? 'network error or blocked' : null),
+                                    });
+                                });
+                            }
+                            return origSend.apply(this, arguments);
+                        };
+
+                        // ── WebSocket wrapper ──
+                        var OrigWebSocket = window.WebSocket;
+                        if (typeof OrigWebSocket === 'function') {
+                            function TitanWebSocket(url, protocols) {
+                                var started = performance.now();
+                                var absUrl;
+                                try { absUrl = new URL(url, location.href).href; }
+                                catch (_) { absUrl = String(url); }
+
+                                var ws = protocols !== undefined
+                                    ? new OrigWebSocket(url, protocols)
+                                    : new OrigWebSocket(url);
+
+                                ws.addEventListener('open', function() {
+                                    report({
+                                        method: 'WS',
+                                        url: absUrl,
+                                        status: 101,
+                                        resource_type: 'websocket',
+                                        duration_ms: Math.round(performance.now() - started),
+                                    });
+                                });
+                                ws.addEventListener('error', function() {
+                                    report({
+                                        method: 'WS',
+                                        url: absUrl,
+                                        status: 0,
+                                        resource_type: 'websocket',
+                                        duration_ms: Math.round(performance.now() - started),
+                                        error: 'WebSocket error',
+                                    });
+                                });
+                                return ws;
+                            }
+                            // Preserve prototype so instanceof checks keep working
+                            TitanWebSocket.prototype = OrigWebSocket.prototype;
+                            TitanWebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+                            TitanWebSocket.OPEN = OrigWebSocket.OPEN;
+                            TitanWebSocket.CLOSING = OrigWebSocket.CLOSING;
+                            TitanWebSocket.CLOSED = OrigWebSocket.CLOSED;
+                            window.WebSocket = TitanWebSocket;
+                        }
+                    })();
                 "#);
             }
         }),
@@ -1957,6 +2438,7 @@ fn main() {
         permissions,
         prompt_queue: PromptQueue::new(),
         audit_log: AuditLog::new(),
+        devtools: devtools::DevtoolsState::new(),
     });
 
     // Bookmark sync: spawn a one-shot startup task that handles three
@@ -1994,12 +2476,43 @@ fn main() {
             let state = protocol_state.clone();
 
             tauri::async_runtime::spawn(async move {
+                // Capture request metadata upfront for devtools recording.
+                // Every return branch below records a completed event so
+                // the Network tab sees the full picture regardless of
+                // which code path served the response.
+                let started = std::time::Instant::now();
                 let uri = request.uri();
+                let devtools_url = uri.to_string();
+                let devtools_method = request.method().as_str().to_string();
                 let host = uri.host().unwrap_or("internal");
                 let path = uri.path();
                 let path = if path.is_empty() { "/" } else { path };
 
                 debug!("protocol: {host}{path}");
+
+                // Closure that builds + records a NetworkEvent for this
+                // protocol handler response. Captures by value so it can
+                // be called from any branch below without reborrowing.
+                let record = |status: u16, resource_type: &str| {
+                    let duration_ms = started.elapsed().as_millis() as u64;
+                    state.devtools.record_event(devtools::NetworkEvent {
+                        id: 0,
+                        timestamp_ms: 0,
+                        tab_label: String::new(),
+                        method: devtools_method.clone(),
+                        url: devtools_url.clone(),
+                        status,
+                        resource_type: resource_type.to_string(),
+                        duration_ms: Some(duration_ms),
+                        request_headers: vec![],
+                        response_headers: vec![
+                            ("x-titan-scheme".to_string(), "nsite-content".to_string()),
+                        ],
+                        request_body: None,
+                        source: "rust".to_string(),
+                        error: None,
+                    });
+                };
 
                 // Internal pages
                 if host == "internal" {
@@ -2019,6 +2532,7 @@ fn main() {
                         }
                         _ => (welcome_page(), "text/html"),
                     };
+                    record(200, "internal");
                     responder.respond(
                         apply_nsite_content_headers(
                             tauri::http::Response::builder()
@@ -2035,6 +2549,7 @@ fn main() {
                 let (pubkey, site_name) = match parse_content_host(host) {
                     Some(p) => p,
                     None => {
+                        record(404, "nsite-content");
                         responder.respond(
                             apply_nsite_content_headers(
                                 tauri::http::Response::builder()
@@ -2052,6 +2567,7 @@ fn main() {
                 let resolver = match state.resolver().await {
                     Ok(r) => r,
                     Err(e) => {
+                        record(500, "nsite-content");
                         responder.respond(
                             apply_nsite_content_headers(
                                 tauri::http::Response::builder()
@@ -2068,6 +2584,24 @@ fn main() {
                 match resolver.resolve(&pubkey, path, site_name.as_deref()).await {
                     Ok(content) => {
                         let content_type = guess_content_type(path);
+                        // Classify by content type for the devtools
+                        // Type column: document/script/stylesheet/image.
+                        let resource_type = if content_type.starts_with("text/html") {
+                            "document"
+                        } else if content_type.starts_with("text/css") {
+                            "stylesheet"
+                        } else if content_type.contains("javascript") {
+                            "script"
+                        } else if content_type.starts_with("image/") {
+                            "image"
+                        } else if content_type.starts_with("font/")
+                            || content_type.contains("font")
+                        {
+                            "font"
+                        } else {
+                            "other"
+                        };
+                        record(200, resource_type);
                         responder.respond(
                             apply_nsite_content_headers(
                                 tauri::http::Response::builder()
@@ -2081,6 +2615,7 @@ fn main() {
                     }
                     Err(e) => {
                         warn!("failed to resolve {host}{path}: {e}");
+                        record(404, "nsite-content");
                         responder.respond(
                             apply_nsite_content_headers(
                                 tauri::http::Response::builder()
@@ -2101,7 +2636,26 @@ fn main() {
                 let app = ctx.app_handle().clone();
                 let webview_label = ctx.webview_label().to_string();
                 tauri::async_runtime::spawn(async move {
+                    // Devtools capture: record every NIP-07 bridge call
+                    // so the Network tab shows what the page is asking
+                    // the signer for. Matches the nsite-content handler
+                    // pattern.
+                    let started = std::time::Instant::now();
+                    let devtools_url = request.uri().to_string();
+                    let devtools_method = request.method().as_str().to_string();
                     let body_bytes = request.body().to_vec();
+                    // Truncate the request body preview before recording
+                    // so dev-console memory doesn't balloon on large
+                    // signEvent payloads. 8 KiB is plenty to see what
+                    // the page is signing.
+                    let body_preview = if body_bytes.len() <= 8192 {
+                        String::from_utf8_lossy(&body_bytes).to_string()
+                    } else {
+                        format!(
+                            "{}...[truncated]",
+                            String::from_utf8_lossy(&body_bytes[..8192])
+                        )
+                    };
 
                     let respond_json = |value: serde_json::Value, status: u16| {
                         let body = serde_json::to_vec(&value).unwrap_or_default();
@@ -2115,8 +2669,34 @@ fn main() {
                             .unwrap()
                     };
 
+                    let record_devtools = |status: u16, error: Option<String>| {
+                        let duration_ms = started.elapsed().as_millis() as u64;
+                        state.devtools.record_event(devtools::NetworkEvent {
+                            id: 0,
+                            timestamp_ms: 0,
+                            tab_label: webview_label.clone(),
+                            method: devtools_method.clone(),
+                            url: devtools_url.clone(),
+                            status,
+                            resource_type: "titan-nostr".to_string(),
+                            duration_ms: Some(duration_ms),
+                            request_headers: vec![(
+                                "content-type".to_string(),
+                                "application/json".to_string(),
+                            )],
+                            response_headers: vec![(
+                                "x-titan-scheme".to_string(),
+                                "titan-nostr".to_string(),
+                            )],
+                            request_body: Some(body_preview.clone()),
+                            source: "rust".to_string(),
+                            error,
+                        });
+                    };
+
                     // OPTIONS preflight
                     if request.method() == "OPTIONS" {
+                        record_devtools(204, None);
                         responder.respond(respond_json(serde_json::json!({}), 204));
                         return;
                     }
@@ -2125,6 +2705,7 @@ fn main() {
                     let req: nip07::NostrRequest = match serde_json::from_slice(&body_bytes) {
                         Ok(r) => r,
                         Err(e) => {
+                            record_devtools(400, Some(format!("invalid request: {e}")));
                             let err = nip07::NostrResponse {
                                 id: String::new(),
                                 result: None,
@@ -2158,6 +2739,11 @@ fn main() {
                         relay_urls,
                     };
                     let response = nip07::dispatch(dispatch_ctx, req).await;
+                    // Record based on whether dispatch produced an error.
+                    // Still 200 at the HTTP layer — the error (if any)
+                    // is in the JSON body — but devtools colors it red.
+                    let err = response.error.clone();
+                    record_devtools(if err.is_some() { 400 } else { 200 }, err);
                     let v = serde_json::to_value(&response).unwrap();
                     responder.respond(respond_json(v, 200));
                 });
@@ -2167,7 +2753,7 @@ fn main() {
             navigate, go_back, go_forward, refresh, resize_content, console_eval,
             open_console, focus_address_bar, toggle_bookmark_cmd,
             add_bookmark, remove_bookmark, rename_bookmark, list_bookmarks, is_bookmarked,
-            get_settings, update_settings,
+            get_settings, update_settings, update_side_panel_width,
             create_tab, close_tab, switch_tab, get_tabs,
             get_site_info,
             signer_status, signer_create, signer_import, signer_unlock,
@@ -2175,6 +2761,9 @@ fn main() {
             signer_pending_prompts, signer_resolve_prompt,
             signer_list_permissions, signer_revoke_permission, signer_revoke_site,
             signer_audit_log, signer_clear_audit_log,
+            devtools_network_snapshot, devtools_network_clear,
+            devtools_set_network_recording, devtools_get_network_recording,
+            devtools_read_storage, devtools_delete_storage_key, devtools_clear_storage,
             hide_content_webview, show_content_webview,
             check_for_update, install_update,
         ])
@@ -2540,5 +3129,196 @@ mod tests {
         assert_eq!(guess_content_type("/photo.jpg"), "image/jpeg");
         assert_eq!(guess_content_type("/photo.jpeg"), "image/jpeg");
         assert_eq!(guess_content_type("/photo.gif"), "image/gif");
+    }
+
+    // ── Settings side panel width clamp tests ──
+    //
+    // The side panel width goes through two clamp layers:
+    //   1. `load_settings` clamps on file load (so a hand-edited
+    //      settings.json can't render the panel unusable)
+    //   2. `update_side_panel_width` clamps on JS-driven saves
+    //
+    // These tests target the load path since it's the only one
+    // reachable without a full Tauri State fixture.
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SETTINGS_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn settings_test_dir() -> PathBuf {
+        let n = SETTINGS_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "titan-settings-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_settings_json(dir: &PathBuf, json: &str) {
+        std::fs::write(dir.join("settings.json"), json).unwrap();
+    }
+
+    #[test]
+    fn settings_missing_file_returns_default() {
+        let dir = settings_test_dir();
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, DEFAULT_SIDE_PANEL_WIDTH);
+        assert_eq!(s.homepage, "titan");
+    }
+
+    #[test]
+    fn settings_missing_field_uses_serde_default() {
+        // A settings.json from a pre-v0.1.7 install won't have a
+        // side_panel_width field. serde(default = "...") must kick in.
+        let dir = settings_test_dir();
+        write_settings_json(
+            &dir,
+            r#"{
+                "relays": [],
+                "discovery_relays": [],
+                "blossom_servers": [],
+                "indexer_pubkey": "abc",
+                "homepage": "titan"
+            }"#,
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, DEFAULT_SIDE_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_width_zero_is_clamped_to_default() {
+        // A hand-edited 0 would render the panel invisible. Clamp up
+        // to the default.
+        let dir = settings_test_dir();
+        write_settings_json(
+            &dir,
+            r#"{
+                "relays": [], "discovery_relays": [], "blossom_servers": [],
+                "indexer_pubkey": "abc", "homepage": "titan",
+                "side_panel_width": 0
+            }"#,
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, DEFAULT_SIDE_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_width_below_min_is_clamped() {
+        let dir = settings_test_dir();
+        let below = MIN_SIDE_PANEL_WIDTH - 1;
+        write_settings_json(
+            &dir,
+            &format!(
+                r#"{{
+                    "relays": [], "discovery_relays": [], "blossom_servers": [],
+                    "indexer_pubkey": "a", "homepage": "titan",
+                    "side_panel_width": {below}
+                }}"#
+            ),
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, DEFAULT_SIDE_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_width_above_max_is_clamped() {
+        // A runaway 999999 would shove the content webview off-screen.
+        let dir = settings_test_dir();
+        write_settings_json(
+            &dir,
+            r#"{
+                "relays": [], "discovery_relays": [], "blossom_servers": [],
+                "indexer_pubkey": "a", "homepage": "titan",
+                "side_panel_width": 999999
+            }"#,
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, DEFAULT_SIDE_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_width_at_min_is_accepted() {
+        // Boundary: exactly MIN_SIDE_PANEL_WIDTH must pass through.
+        let dir = settings_test_dir();
+        write_settings_json(
+            &dir,
+            &format!(
+                r#"{{
+                    "relays": [], "discovery_relays": [], "blossom_servers": [],
+                    "indexer_pubkey": "a", "homepage": "titan",
+                    "side_panel_width": {}
+                }}"#,
+                MIN_SIDE_PANEL_WIDTH
+            ),
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, MIN_SIDE_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_width_at_max_is_accepted() {
+        let dir = settings_test_dir();
+        write_settings_json(
+            &dir,
+            &format!(
+                r#"{{
+                    "relays": [], "discovery_relays": [], "blossom_servers": [],
+                    "indexer_pubkey": "a", "homepage": "titan",
+                    "side_panel_width": {}
+                }}"#,
+                MAX_SIDE_PANEL_WIDTH
+            ),
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, MAX_SIDE_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_width_in_range_is_accepted() {
+        // A normal user-dragged width between the bounds should
+        // survive the load pass unchanged.
+        let dir = settings_test_dir();
+        write_settings_json(
+            &dir,
+            r#"{
+                "relays": [], "discovery_relays": [], "blossom_servers": [],
+                "indexer_pubkey": "a", "homepage": "titan",
+                "side_panel_width": 720
+            }"#,
+        );
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, 720);
+    }
+
+    #[test]
+    fn settings_malformed_json_falls_back_to_default() {
+        // A corrupted settings.json shouldn't crash the app on boot
+        // — it should just fall back to defaults and warn.
+        let dir = settings_test_dir();
+        write_settings_json(&dir, "{ this is not valid json");
+        let s = load_settings(&dir);
+        assert_eq!(s.side_panel_width, DEFAULT_SIDE_PANEL_WIDTH);
+        assert_eq!(s.homepage, "titan");
+    }
+
+    #[test]
+    fn settings_save_and_reload_roundtrip() {
+        // Write settings with a custom width, reload, and verify the
+        // value is preserved.
+        let dir = settings_test_dir();
+        let mut settings = Settings::default();
+        settings.side_panel_width = 512;
+        settings.homepage = "custom".to_string();
+        save_settings(&dir, &settings);
+
+        let loaded = load_settings(&dir);
+        assert_eq!(loaded.side_panel_width, 512);
+        assert_eq!(loaded.homepage, "custom");
     }
 }

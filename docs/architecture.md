@@ -421,6 +421,128 @@ and the `on_navigation` allowlist accepts both `nsite-content://` and
 `content_url_to_display()` strips the `nsite-content.` prefix so users
 see the original URL.
 
+## Developer Tools (Phase 11, v0.1.7)
+
+The dev console panel has three tabs driven by a common side-panel
+infrastructure that's also used by the bookmarks, settings, signer,
+and info panels.
+
+### Tab structure
+
+```
+#panel-console
+├── #devtools-tabs              (horizontal tab strip + Clear button)
+├── #devtools-tab-logs          (existing Rust tracing + REPL)
+├── #devtools-tab-network       (captured requests table + detail pane)
+└── #devtools-tab-application   (localStorage / sessionStorage / cookies)
+```
+
+Switching tabs toggles visibility of the three tab bodies. Each tab
+registers its own clear handler (logs clears `#console-log`, network
+clears the ring buffer, application refreshes from the content
+webview) and the single Clear button dispatches to whichever is active.
+
+### Network capture
+
+Two capture paths feed a single ring buffer
+(`crates/titan-app/src/devtools.rs`):
+
+- **Rust-side**: the `nsite-content://` and `titan-nostr://` async
+  protocol handlers time their responses and push a
+  `devtools::NetworkEvent` into `DevtoolsState` at every return branch
+  (including error paths). These have `source: "rust"`.
+- **JS-side**: the `on_page_load` eval block injects wrappers around
+  `window.fetch`, `XMLHttpRequest`, and `WebSocket`. When a wrapped
+  request completes, the wrapper builds a JSON event and clicks a
+  synthetic anchor at `titan-cmd://net-event/<encoded-json>`. The
+  navigation handler intercepts the `titan-cmd` scheme, parses the
+  payload via `devtools::parse_js_event`, and pushes into the same
+  ring buffer. These have `source: "js"`.
+
+The ring buffer is capped at 500 events (`MAX_NETWORK_EVENTS`) to
+bound memory on long-running sessions. Recording can be toggled off
+from the UI; when off, new events are dropped on the floor but the
+buffer is not cleared.
+
+After every insert, the Rust side emits a `devtools-network-updated`
+Tauri event. The chrome-side network tab coalesces these via
+`requestAnimationFrame` so rapid bursts (40 requests on a page load)
+become a single repaint.
+
+**Response bodies are not captured.** Cloning every response would
+double memory for each request, and Titan doesn't have a UX for large
+body previews yet. Users who want to see a response can `await
+fetch(...).then(r => r.text())` from the REPL.
+
+**Resource load tracking is partial.** `<img>`, `<link>`, `<script>`,
+and `<iframe>` loads bypass the JS wrappers (they're not fetch
+calls), so they only show up if they happen to be served through
+`nsite-content://` — which is the common case for nsite subresources.
+External resources loaded via HTML tags won't appear in the network
+tab in v1.
+
+### Copy as cURL
+
+The "Copy as cURL" button on a row detail calls
+`helpers.js::buildCurlCommand(event)` which walks the captured event
+and produces a copy-pasteable command. It uses `shellQuote` to wrap
+unsafe values in single quotes and handles embedded single quotes via
+the classic `'\''` escape. `content-length` headers are stripped
+because curl computes them itself. Captured in Node-runnable unit
+tests at `ui/helpers.test.js`.
+
+### Application tab
+
+Browser devtools typically have direct access to the content page's
+storage. Titan's chrome is a separate webview from the content, so
+we read storage by eval'ing a small JS reader in the content webview
+that serializes `localStorage`, `sessionStorage`, and `document.cookie`
+into a JSON payload and reports back via `titan-cmd://devtools-storage/`.
+
+Mutations (delete a key, clear all) also go through `webview.eval()`
+for symmetry. After a mutation the UI waits 50ms and re-reads — the
+round-trip latency is acceptable for interactive use and lets us
+avoid maintaining a separate read/write channel.
+
+### Log filtering
+
+The Logs tab has two filters: a minimum level dropdown (All / Debug+ /
+Info+ / Warn+ / Errors) and a substring match against the Rust target
+(e.g. "titan_resolver"). Default is Info+, which hides the cache and
+resolver trace spam that shows up when `RUST_LOG=titan=debug` is set.
+
+Filtering is done purely at the DOM level. Each log entry carries
+`data-level` and `data-target` attributes, and the filter functions
+toggle a `log-hidden` class. Changing the filter re-runs through
+existing entries without re-rendering.
+
+Auto-scroll is sticky-aware: new log lines scroll into view only if
+the user was already at the bottom. If they scrolled up to read
+something, new entries don't yank them back down.
+
+### Side panel resize
+
+The side panel is fixed-positioned on the right edge of the window
+with its width driven by a CSS custom property `--panel-width`. A 6px
+drag handle on the left edge (`#side-panel-resize`) captures
+mousedown, attaches document-level mousemove and mouseup listeners,
+and updates `--panel-width` live as the user drags.
+
+The content webview is a separate native layer, not part of the
+chrome DOM, so resizing it requires an IPC round trip via the
+existing `resize_content` command. The drag handler throttles this
+via `requestAnimationFrame` so the Rust side isn't hammered at 60+ Hz.
+
+On mouseup, the final width is persisted via a dedicated
+`update_side_panel_width` command. This is separate from the generic
+`update_settings` to avoid races with concurrent Settings panel edits
+(which load the whole Settings struct, mutate it, and save it back).
+
+The width is clamped to [280px, 1400px] at both the Rust save path
+(so a hand-edited `settings.json` can't render the panel unusable)
+and the JS drag handler (so mouse excursions past the window edge
+don't shrink the content to nothing).
+
 ## Infrastructure
 
 ### k8s Cluster

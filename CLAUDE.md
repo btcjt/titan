@@ -143,6 +143,7 @@ Blossom: https://blossom.westernbtc.com
 8. ~~Distribution~~ (DONE — GitHub Actions CI/CD, dmg/AppImage/msi, zapstore)
 9. ~~Tabs, Console, Interactive Registration~~ (DONE — multi-tab, console forwarding, bitcoin-cli builder)
 10. Built-in Signer (IN PROGRESS — key management, window.nostr bridge, permissions + approval prompts, audit log, getRelays plumbing, auto-updater, CSP hardening done; auto-lock, encrypted file fallback remaining)
+11. ~~Developer Tools~~ (DONE — v0.1.7: three-tab dev console with Logs/Network/Application, ring-buffered network log with copy-as-cURL, fetch/XHR/WebSocket wrappers, `nsite-content://` + `titan-nostr://` request capture, localStorage/sessionStorage/cookies viewer via webview.eval readback, drag-to-resize side panel with persisted width, level + source filters on Rust log stream)
 
 ## Key Decisions Made
 
@@ -171,6 +172,9 @@ Blossom: https://blossom.westernbtc.com
 - Auto-updater via tauri-plugin-updater + minisign signature verification
 - Windows WebView2 workaround: `platform_navigate_url` rewrites `nsite-content://` → `http://nsite-content.` on every navigate call (wry only rewrites at creation time)
 - Titan Bookmarks minted as its own kind (10129, replaceable, `xx129` convention) instead of reusing NIP-51 kind 10003 — clean semantics for `nsite://` URLs, no cross-client tag collisions (see `docs/titan-bookmarks.md`)
+- Dev console network capture uses two paths: Rust protocol handlers (`nsite-content://`, `titan-nostr://`) push into the `devtools::DevtoolsState` ring buffer directly, and content-page JS wraps `fetch`/`XMLHttpRequest`/`WebSocket` at page load, posting events back to chrome via `titan-cmd://net-event/<json>` URLs intercepted by the navigation handler. Ring buffer capped at 500 events to bound memory on long-running sessions.
+- Dev console Application tab reads `localStorage`/`sessionStorage`/`document.cookie` from the active content webview via `webview.eval()` — injects a reader script that POSTs the snapshot back via `titan-cmd://devtools-storage/<json>`. Mutations (delete key, clear all) also go through `webview.eval()` for symmetry.
+- Side panel width is a CSS custom property (`--panel-width`) updated live during drag, persisted via a dedicated `update_side_panel_width` Tauri command to avoid races with concurrent Settings panel edits. Clamped to [280px, 1400px] both at the Rust layer (on save) and the JS layer (during drag).
 
 ## Registered Names
 

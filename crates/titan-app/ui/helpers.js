@@ -48,9 +48,65 @@ function isHex(s, expectedLen) {
   return /^[0-9a-fA-F]+$/.test(s);
 }
 
+// Build a bash-friendly `curl` command from a captured NetworkEvent.
+// Used by the devtools Network tab's "Copy as cURL" button.
+//
+// Handles method, URL, headers, and an optional request body. Quotes
+// shell-unsafe values using single-quote wrapping with the standard
+// `'\''` escape for embedded single quotes. Preserves the common
+// `-H` / `--data-raw` conventions that Chrome and Firefox devtools use
+// so users can paste the result into any curl-compatible tool.
+function buildCurlCommand(event) {
+  if (!event || !event.url) return "";
+  const parts = ["curl"];
+  const method = (event.method || "GET").toUpperCase();
+
+  if (method !== "GET") {
+    parts.push("-X", method);
+  }
+
+  parts.push(shellQuote(event.url));
+
+  const headers = Array.isArray(event.request_headers)
+    ? event.request_headers
+    : [];
+  for (const [name, value] of headers) {
+    if (typeof name !== "string") continue;
+    // Skip the content-length header — curl computes it itself.
+    if (name.toLowerCase() === "content-length") continue;
+    parts.push("-H", shellQuote(`${name}: ${value == null ? "" : value}`));
+  }
+
+  if (typeof event.request_body === "string" && event.request_body.length > 0) {
+    // --data-raw preserves the body exactly without curl's at-file
+    // special-case on @-prefixed strings.
+    parts.push("--data-raw", shellQuote(event.request_body));
+  }
+
+  return parts.join(" ");
+}
+
+// Quote a string for bash, using single quotes and escaping any
+// embedded single quotes via the '\'' trick.
+function shellQuote(s) {
+  if (s == null) return "''";
+  const str = String(s);
+  if (str === "") return "''";
+  // Already-safe: only printable ASCII that bash treats as a word
+  if (/^[a-zA-Z0-9_\-./:@%+=,]+$/.test(str)) return str;
+  return "'" + str.replace(/'/g, "'\\''") + "'";
+}
+
 // Export for Node-based unit tests. In the browser `module` is undefined
 // and this is a no-op, so chrome.js (loaded after this file) can still
 // reference these helpers as globals.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { escapeHtml, escapeAttr, isSafeHttpUrl, isHex };
+  module.exports = {
+    escapeHtml,
+    escapeAttr,
+    isSafeHttpUrl,
+    isHex,
+    buildCurlCommand,
+    shellQuote,
+  };
 }

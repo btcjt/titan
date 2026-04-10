@@ -35,7 +35,24 @@ function computeContentTop() {
   const bannerHeight = banner && banner.offsetParent !== null ? banner.offsetHeight : 0;
   return CHROME_HEIGHT + bannerHeight;
 }
-const PANEL_WIDTH = 280;
+
+// Side panel width is now dynamic — the user can drag the left edge
+// of the side panel to resize it (see the resize handler near the
+// bottom of this file). The width is stored in the CSS variable
+// `--panel-width` so all the margin-right rules on the toolbar, tab
+// strip, loading bar, and update banner update atomically.
+const DEFAULT_PANEL_WIDTH = 280;
+const MIN_PANEL_WIDTH = 280;
+const MAX_PANEL_WIDTH = 1400;
+let currentPanelWidth = DEFAULT_PANEL_WIDTH;
+
+function setPanelWidth(px) {
+  const clamped = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, Math.round(px)));
+  currentPanelWidth = clamped;
+  document.documentElement.style.setProperty("--panel-width", clamped + "px");
+  return clamped;
+}
+
 let activePanel = null;
 let tabs = [];
 let activeTabId = null;
@@ -43,7 +60,7 @@ let activeTabId = null;
 // ── Content Webview Layout ──
 
 async function updateContentLayout() {
-  const rightOffset = activePanel ? PANEL_WIDTH : 0;
+  const rightOffset = activePanel ? currentPanelWidth : 0;
   await invoke("resize_content", { top: computeContentTop(), right: rightOffset });
 }
 
@@ -1011,7 +1028,10 @@ async function openPanel(name) {
   } else if (name === "console") {
     panelTitle.textContent = "Console";
     panelConsole.style.display = "block";
-    setTimeout(() => consoleInput.focus(), 0);
+    // Default to the logs tab when opening the console panel.
+    // Individual tabs persist their own state between opens, but the
+    // active tab resets so the JS REPL input is always one click away.
+    switchDevtoolsTab("logs");
   } else if (name === "settings") {
     panelTitle.textContent = "Settings";
     panelSettings.style.display = "block";
@@ -1058,6 +1078,10 @@ function updatePanelButtonState() {
 function logEvalInput(code) {
   const entry = document.createElement("div");
   entry.className = "console-entry eval-input";
+  // REPL input is always user-initiated — tag as info so it survives
+  // any min-level filter except "Errors only".
+  entry.dataset.level = "info";
+  entry.dataset.target = "repl";
   const prompt = document.createElement("span");
   prompt.className = "console-time";
   prompt.textContent = "> ";
@@ -1065,13 +1089,16 @@ function logEvalInput(code) {
   const codeEl = document.createElement("span");
   codeEl.textContent = code;
   entry.appendChild(codeEl);
+  applyLogFilterToEntry(entry);
   consoleLog.appendChild(entry);
-  consoleLog.scrollTop = consoleLog.scrollHeight;
+  maybeScrollLogs();
 }
 
 function logEvalResult(level, text) {
   const entry = document.createElement("div");
   entry.className = `console-entry eval-result ${level}`;
+  entry.dataset.level = level;
+  entry.dataset.target = "repl";
   const prefix = document.createElement("span");
   prefix.className = "console-time";
   prefix.textContent = level === "error" ? "!" : "\u2190";
@@ -1080,8 +1107,9 @@ function logEvalResult(level, text) {
   pre.style.whiteSpace = "pre-wrap";
   pre.textContent = " " + text;
   entry.appendChild(pre);
+  applyLogFilterToEntry(entry);
   consoleLog.appendChild(entry);
-  consoleLog.scrollTop = consoleLog.scrollHeight;
+  maybeScrollLogs();
 }
 
 // REPL history (up/down arrows)
@@ -1129,6 +1157,10 @@ consoleInput.addEventListener("keydown", (e) => {
 function logRust(level, target, msg) {
   const entry = document.createElement("div");
   entry.className = `console-entry rust ${level}`;
+  // Stash metadata for the logs-tab filters to read. Lowercase the
+  // target so filter matching is case-insensitive.
+  entry.dataset.level = level;
+  entry.dataset.target = (target || "").toLowerCase();
 
   const time = document.createElement("span");
   time.className = "console-time";
@@ -1149,13 +1181,18 @@ function logRust(level, target, msg) {
   text.textContent = " " + msg;
   entry.appendChild(text);
 
+  applyLogFilterToEntry(entry);
   consoleLog.appendChild(entry);
-  consoleLog.scrollTop = consoleLog.scrollHeight;
+  maybeScrollLogs();
 }
 
 function log(level, msg) {
   const entry = document.createElement("div");
   entry.className = `console-entry ${level}`;
+  entry.dataset.level = level;
+  // Chrome-side log(): no target, so leave target empty. The target
+  // filter treats empty as "matches everything".
+  entry.dataset.target = "";
 
   const time = document.createElement("span");
   time.className = "console-time";
@@ -1163,9 +1200,501 @@ function log(level, msg) {
 
   entry.appendChild(time);
   entry.appendChild(document.createTextNode(msg));
+  applyLogFilterToEntry(entry);
   consoleLog.appendChild(entry);
-  consoleLog.scrollTop = consoleLog.scrollHeight;
+  maybeScrollLogs();
 }
+
+// ── Log filtering ──
+//
+// The Logs tab has two filters: a minimum level dropdown and a text
+// input matching the log source (Rust target). Filtered entries are
+// hidden via `.log-hidden` rather than removed, so changing the filter
+// can re-reveal them without any bookkeeping.
+//
+// Default: hide debug-level entries. This is a MUCH better experience
+// than showing everything when `RUST_LOG=titan=debug` is set — the
+// user can drop to "All" or "Debug+" from the dropdown when they
+// actually want to debug the resolver.
+
+let logFilterLevel = "info"; // min level to show: all | debug | info | warn | error
+let logFilterTarget = ""; // substring to match against data-target
+
+const LEVEL_PRIORITY = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+};
+
+function levelPassesFilter(entryLevel) {
+  if (logFilterLevel === "all") return true;
+  const min = LEVEL_PRIORITY[logFilterLevel] ?? 0;
+  const got = LEVEL_PRIORITY[entryLevel] ?? 100;
+  return got >= min;
+}
+
+function targetPassesFilter(entryTarget) {
+  if (!logFilterTarget) return true;
+  return (entryTarget || "").includes(logFilterTarget);
+}
+
+function applyLogFilterToEntry(entry) {
+  const level = entry.dataset.level || "";
+  const target = entry.dataset.target || "";
+  const visible = levelPassesFilter(level) && targetPassesFilter(target);
+  entry.classList.toggle("log-hidden", !visible);
+}
+
+function reapplyLogFilters() {
+  let hidden = 0;
+  for (const entry of consoleLog.querySelectorAll(".console-entry")) {
+    applyLogFilterToEntry(entry);
+    if (entry.classList.contains("log-hidden")) hidden += 1;
+  }
+  const counter = document.getElementById("logs-hidden-count");
+  if (counter) {
+    counter.textContent = hidden > 0 ? `${hidden} hidden` : "";
+  }
+}
+
+// Auto-scroll only if the user was already at the bottom. If they
+// scrolled up to read something, a new log shouldn't yank them back
+// down. 8px slack to account for fractional pixel positions.
+function maybeScrollLogs() {
+  const atBottom =
+    consoleLog.scrollHeight - consoleLog.scrollTop - consoleLog.clientHeight < 8;
+  if (atBottom) {
+    consoleLog.scrollTop = consoleLog.scrollHeight;
+  }
+}
+
+document.getElementById("logs-level-filter").addEventListener("change", (e) => {
+  logFilterLevel = e.target.value;
+  reapplyLogFilters();
+});
+
+document.getElementById("logs-target-filter").addEventListener("input", (e) => {
+  logFilterTarget = (e.target.value || "").toLowerCase();
+  reapplyLogFilters();
+});
+
+// ── Network Tab ──
+//
+// The Network tab shows every fetch / XHR / WebSocket made by the
+// active content page plus every nsite-content:// and titan-nostr://
+// request served by the Rust side. Data flows from the Rust devtools
+// ring buffer (via the `devtools_network_snapshot` command) and is
+// refreshed whenever a `devtools-network-updated` Tauri event fires.
+//
+// The user can toggle recording, filter by URL, clear the log, click
+// any row to see headers/body, and copy a given request as a `curl`
+// command for reproducing it outside the browser.
+
+let networkEvents = []; // latest snapshot from Rust
+let networkSelectedId = null; // id of the currently expanded row
+let networkFilterText = ""; // lowercase filter string
+let networkRefreshQueued = false; // coalesce rapid updates
+
+// Coalesced refresh: multiple `devtools-network-updated` events arriving
+// in quick succession (e.g. during a page load that fires 30 requests)
+// should not trigger 30 separate snapshots. We queue a single refresh
+// in the next animation frame.
+function queueNetworkRefresh() {
+  if (networkRefreshQueued) return;
+  networkRefreshQueued = true;
+  requestAnimationFrame(async () => {
+    networkRefreshQueued = false;
+    try {
+      networkEvents = await invoke("devtools_network_snapshot");
+    } catch (e) {
+      log("error", "devtools_network_snapshot: " + e);
+      return;
+    }
+    renderNetworkTable();
+  });
+}
+
+function clearNetworkLog() {
+  invoke("devtools_network_clear").catch((e) =>
+    log("error", "devtools_network_clear: " + e),
+  );
+  networkEvents = [];
+  networkSelectedId = null;
+  renderNetworkTable();
+}
+
+function getFilteredNetworkEvents() {
+  if (!networkFilterText) return networkEvents;
+  return networkEvents.filter((ev) =>
+    (ev.url || "").toLowerCase().includes(networkFilterText),
+  );
+}
+
+function renderNetworkTable() {
+  const tbody = document.getElementById("network-table-body");
+  const empty = document.getElementById("network-empty");
+  const stats = document.getElementById("network-stats");
+  const badge = document.getElementById("devtools-network-count");
+  if (!tbody) return;
+
+  const filtered = getFilteredNetworkEvents();
+  const total = networkEvents.length;
+  const shown = filtered.length;
+
+  // Badge on the tab button shows current count (for at-a-glance
+  // feedback even when the tab isn't active).
+  if (total > 0) {
+    badge.style.display = "inline-block";
+    badge.textContent = total > 999 ? "999+" : String(total);
+  } else {
+    badge.style.display = "none";
+  }
+
+  stats.textContent = total === shown ? `${total}` : `${shown} / ${total}`;
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = "";
+    empty.style.display = "block";
+    empty.textContent = total === 0
+      ? "No network activity yet. Navigate or interact with the page."
+      : "No matches for the current filter.";
+    return;
+  }
+
+  empty.style.display = "none";
+
+  const rows = filtered.map((ev) => {
+    const selected = ev.id === networkSelectedId ? " selected" : "";
+    const method = escapeHtml(ev.method || "GET");
+    const url = escapeHtml(ev.url || "");
+    const type = escapeHtml(ev.resource_type || "other");
+
+    // Status rendering: pending / error / OK
+    let statusHtml;
+    if (ev.error) {
+      statusHtml = `<span class="net-status-err">${escapeHtml(String(ev.status || "err"))}</span>`;
+    } else if (!ev.status || ev.status === 0) {
+      statusHtml = `<span class="net-status-pending">—</span>`;
+    } else {
+      const cls = ev.status >= 400 ? "net-status-err" : "net-status-ok";
+      statusHtml = `<span class="${cls}">${ev.status}</span>`;
+    }
+
+    const timeMs = typeof ev.duration_ms === "number" ? ev.duration_ms : null;
+    const timeText = timeMs == null ? "—" : `${timeMs} ms`;
+    const timeClass = timeMs != null && timeMs > 500 ? "col-time net-slow" : "col-time";
+
+    return `<tr data-net-id="${ev.id}" class="${selected.trim()}">
+      <td class="col-method"><span class="net-method ${method}">${method}</span></td>
+      <td class="col-status">${statusHtml}</td>
+      <td class="col-url" title="${escapeAttr(ev.url || "")}">${url}</td>
+      <td class="col-type">${type}</td>
+      <td class="${timeClass}">${escapeHtml(timeText)}</td>
+    </tr>`;
+  });
+
+  tbody.innerHTML = rows.join("");
+
+  for (const tr of tbody.querySelectorAll("tr")) {
+    tr.addEventListener("click", () => {
+      const id = Number(tr.dataset.netId);
+      networkSelectedId = id;
+      renderNetworkDetail(id);
+      for (const row of tbody.querySelectorAll("tr")) {
+        row.classList.toggle("selected", Number(row.dataset.netId) === id);
+      }
+    });
+  }
+}
+
+function renderNetworkDetail(id) {
+  const detail = document.getElementById("network-detail");
+  if (!detail) return;
+  const ev = networkEvents.find((e) => e.id === id);
+  if (!ev) {
+    detail.style.display = "none";
+    return;
+  }
+
+  const formatHeaders = (list) => {
+    if (!Array.isArray(list) || list.length === 0) return "(none)";
+    return list
+      .map(
+        ([k, v]) =>
+          `${escapeHtml(String(k))}: ${escapeHtml(String(v == null ? "" : v))}`,
+      )
+      .join("\n");
+  };
+
+  const bodySection = ev.request_body
+    ? `<div class="net-detail-section">
+        <div class="net-detail-label">Request body</div>
+        <pre class="net-detail-headers">${escapeHtml(ev.request_body)}</pre>
+      </div>`
+    : "";
+
+  const errorSection = ev.error
+    ? `<div class="net-detail-section">
+        <div class="net-detail-label">Error</div>
+        <div class="net-detail-value" style="color:#c66;">${escapeHtml(ev.error)}</div>
+      </div>`
+    : "";
+
+  detail.innerHTML = `
+    <div class="net-detail-section">
+      <div class="net-detail-label">General</div>
+      <div class="net-detail-value">${escapeHtml(ev.method || "GET")} ${escapeHtml(ev.url || "")}</div>
+      <div class="net-detail-value" style="color:var(--text-muted);">
+        Status ${escapeHtml(String(ev.status || "—"))}
+        · ${escapeHtml(ev.resource_type || "other")}
+        · ${escapeHtml(typeof ev.duration_ms === "number" ? ev.duration_ms + " ms" : "—")}
+        · source: ${escapeHtml(ev.source || "?")}
+      </div>
+    </div>
+    <div class="net-detail-section">
+      <div class="net-detail-label">Request headers</div>
+      <pre class="net-detail-headers">${formatHeaders(ev.request_headers)}</pre>
+    </div>
+    <div class="net-detail-section">
+      <div class="net-detail-label">Response headers</div>
+      <pre class="net-detail-headers">${formatHeaders(ev.response_headers)}</pre>
+    </div>
+    ${bodySection}
+    ${errorSection}
+    <div class="net-detail-actions">
+      <button class="net-detail-btn" id="net-copy-curl">Copy as cURL</button>
+      <button class="net-detail-btn" id="net-copy-url">Copy URL</button>
+      <button class="net-detail-btn net-detail-close" id="net-close-detail">Close</button>
+    </div>
+  `;
+  detail.style.display = "block";
+
+  document.getElementById("net-copy-curl").addEventListener("click", () => {
+    const cmd = buildCurlCommand(ev);
+    navigator.clipboard
+      .writeText(cmd)
+      .then(() => log("info", "copied curl command"))
+      .catch((err) => log("error", "clipboard write failed: " + err));
+  });
+  document.getElementById("net-copy-url").addEventListener("click", () => {
+    navigator.clipboard
+      .writeText(ev.url || "")
+      .then(() => log("info", "copied url"))
+      .catch((err) => log("error", "clipboard write failed: " + err));
+  });
+  document.getElementById("net-close-detail").addEventListener("click", () => {
+    networkSelectedId = null;
+    detail.style.display = "none";
+    for (const row of document.querySelectorAll("#network-table tbody tr")) {
+      row.classList.remove("selected");
+    }
+  });
+}
+
+// Wire up the toolbar controls once at startup. The record checkbox
+// and filter input persist across panel open/close without the rest
+// of the code needing to care.
+document.getElementById("network-record").addEventListener("change", (e) => {
+  invoke("devtools_set_network_recording", { recording: e.target.checked }).catch(
+    (err) => log("error", "set recording: " + err),
+  );
+});
+
+document.getElementById("network-filter").addEventListener("input", (e) => {
+  networkFilterText = (e.target.value || "").toLowerCase();
+  renderNetworkTable();
+});
+
+// Listen for updates from Rust. The event fires after every recorded
+// request; we coalesce into a single rAF-scheduled refresh.
+listen("devtools-network-updated", () => queueNetworkRefresh());
+
+// Initial snapshot fetch happens when the user switches to the tab
+// for the first time — see switchDevtoolsTab below.
+
+// ── Application Tab ──
+//
+// Shows localStorage, sessionStorage, and cookies from the active
+// content webview. Data arrives asynchronously: the chrome invokes
+// `devtools_read_storage`, which eval's a reader script inside the
+// content webview, which reports back via a `titan-cmd://devtools-
+// storage/...` URL. The navigation handler parses the payload and
+// emits a `devtools-storage` Tauri event that renderApplicationTab
+// awaits.
+
+let currentApplicationSnapshot = null;
+
+function renderApplicationTab() {
+  // Kick off a read — the actual rendering happens in the
+  // devtools-storage listener below. Show a pending state for snappy
+  // UX since the round trip is ~1 rAF on fast machines.
+  invoke("devtools_read_storage").catch((err) => {
+    log("error", "devtools_read_storage: " + err);
+  });
+}
+
+listen("devtools-storage", (event) => {
+  currentApplicationSnapshot = event.payload || null;
+  paintApplicationTables();
+});
+
+function paintApplicationTables() {
+  const snap = currentApplicationSnapshot || {
+    origin: "",
+    local: [],
+    session: [],
+    cookies: [],
+  };
+  const originEl = document.getElementById("application-origin");
+  if (originEl) {
+    originEl.textContent = snap.origin || snap.href || "(no origin)";
+  }
+
+  paintStorageTable(
+    document.querySelector("#application-local tbody"),
+    document.querySelector('.application-empty[data-for="localStorage"]'),
+    snap.local || [],
+    "local",
+  );
+  paintStorageTable(
+    document.querySelector("#application-session tbody"),
+    document.querySelector('.application-empty[data-for="sessionStorage"]'),
+    snap.session || [],
+    "session",
+  );
+  paintStorageTable(
+    document.querySelector("#application-cookies tbody"),
+    document.querySelector('.application-empty[data-for="cookies"]'),
+    snap.cookies || [],
+    "cookie",
+  );
+}
+
+function paintStorageTable(tbody, emptyEl, rows, kind) {
+  if (!tbody) return;
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = "";
+    if (emptyEl) emptyEl.style.display = "block";
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = "none";
+  tbody.innerHTML = rows
+    .map(([k, v]) => {
+      const keyEsc = escapeHtml(String(k == null ? "" : k));
+      const valEsc = escapeHtml(String(v == null ? "" : v));
+      return `<tr data-storage-key="${escapeAttr(String(k == null ? "" : k))}">
+        <td>${keyEsc}</td>
+        <td>${valEsc}</td>
+        <td><button class="application-row-delete" title="Delete">&times;</button></td>
+      </tr>`;
+    })
+    .join("");
+
+  for (const btn of tbody.querySelectorAll(".application-row-delete")) {
+    btn.addEventListener("click", async (e) => {
+      const tr = e.currentTarget.closest("tr");
+      if (!tr) return;
+      const key = tr.dataset.storageKey;
+      try {
+        await invoke("devtools_delete_storage_key", { kind, key });
+        // Storage edits happen asynchronously via eval, so give the
+        // content webview a beat to apply before re-reading.
+        setTimeout(renderApplicationTab, 50);
+      } catch (err) {
+        log("error", "delete storage key: " + err);
+      }
+    });
+  }
+}
+
+// Wire the toolbar: refresh + clear-all buttons
+document.getElementById("application-refresh").addEventListener("click", () => {
+  renderApplicationTab();
+});
+
+for (const btn of document.querySelectorAll(".application-clear-all")) {
+  btn.addEventListener("click", async () => {
+    const kind = btn.dataset.clear;
+    if (!kind) return;
+    const labels = {
+      localStorage: "localStorage",
+      sessionStorage: "sessionStorage",
+      cookies: "cookies",
+    };
+    const label = labels[kind] || kind;
+    if (!confirm(`Clear all ${label} for this site?`)) return;
+    try {
+      await invoke("devtools_clear_storage", { kind });
+      setTimeout(renderApplicationTab, 50);
+    } catch (err) {
+      log("error", "clear storage: " + err);
+    }
+  });
+}
+
+// ── Dev Console Tabs ──
+//
+// The dev console panel has three tabs: Logs (the original JS REPL +
+// tracing output), Network (captured fetch/XHR/WebSocket + internal
+// protocol requests), and Application (localStorage / sessionStorage /
+// cookies from the active content webview).
+//
+// Switching tabs just toggles visibility of the three tab bodies. The
+// Clear button is context-sensitive: each tab registers its own clear
+// handler, and the button calls whichever is currently active.
+
+let activeDevtoolsTab = "logs";
+const devtoolsClearHandlers = {
+  logs: () => {
+    consoleLog.innerHTML = "";
+  },
+  network: () => {
+    // Set in the network section below
+    if (typeof clearNetworkLog === "function") clearNetworkLog();
+  },
+  application: () => {
+    // Refresh from the content webview — effectively a re-read
+    if (typeof renderApplicationTab === "function") renderApplicationTab();
+  },
+};
+
+function switchDevtoolsTab(name) {
+  if (!["logs", "network", "application"].includes(name)) return;
+  activeDevtoolsTab = name;
+
+  for (const tab of document.querySelectorAll(".devtools-tab")) {
+    tab.classList.toggle("active", tab.dataset.devtoolsTab === name);
+  }
+  document.getElementById("devtools-tab-logs").style.display =
+    name === "logs" ? "flex" : "none";
+  document.getElementById("devtools-tab-network").style.display =
+    name === "network" ? "flex" : "none";
+  document.getElementById("devtools-tab-application").style.display =
+    name === "application" ? "flex" : "none";
+
+  // Tab-specific onEnter actions
+  if (name === "logs") {
+    setTimeout(() => consoleInput.focus(), 0);
+  } else if (name === "network") {
+    // Refresh the snapshot on entry so the table reflects any events
+    // recorded while the tab was hidden.
+    queueNetworkRefresh();
+  } else if (name === "application") {
+    if (typeof renderApplicationTab === "function") renderApplicationTab();
+  }
+}
+
+for (const tab of document.querySelectorAll(".devtools-tab")) {
+  tab.addEventListener("click", () =>
+    switchDevtoolsTab(tab.dataset.devtoolsTab),
+  );
+}
+
+document.getElementById("devtools-clear").addEventListener("click", () => {
+  const handler = devtoolsClearHandlers[activeDevtoolsTab];
+  if (handler) handler();
+});
 
 // ── Settings ──
 
@@ -1394,6 +1923,67 @@ function hideLoading() {
 // Keep content webview sized correctly on window resize
 window.addEventListener("resize", () => updateContentLayout());
 
+// ── Side Panel Drag-to-Resize ──
+//
+// The left edge of the side panel is a 6px drag handle (#side-panel-
+// resize). On mousedown we capture the pointer, track mousemove to
+// update the panel width live (and call updateContentLayout so the
+// content webview shrinks to match), and on mouseup persist the final
+// width to settings via `update_side_panel_width`.
+(function wireSidePanelResize() {
+  const handle = document.getElementById("side-panel-resize");
+  if (!handle) return;
+
+  let dragging = false;
+  // Throttle the native webview resize calls — moving the mouse fires
+  // mousemove at 60+ Hz and `resize_content` is an IPC round trip.
+  // We rAF the layout updates so the panel looks live but we don't
+  // hammer the Rust side.
+  let pendingLayout = false;
+
+  function onMouseMove(e) {
+    if (!dragging) return;
+    // The panel is right-anchored, so the new width is simply the
+    // distance from the mouse to the right edge of the window.
+    const newWidth = window.innerWidth - e.clientX;
+    setPanelWidth(newWidth);
+    if (!pendingLayout) {
+      pendingLayout = true;
+      requestAnimationFrame(() => {
+        pendingLayout = false;
+        updateContentLayout().catch((err) =>
+          log("error", "resize layout: " + err),
+        );
+      });
+    }
+  }
+
+  function onMouseUp() {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    document.body.classList.remove("panel-resizing");
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+    // Persist the final width. We use the dedicated
+    // update_side_panel_width command so a concurrent edit from the
+    // Settings panel can't clobber the width (or vice versa).
+    invoke("update_side_panel_width", { width: currentPanelWidth }).catch(
+      (err) => log("error", "persist panel width: " + err),
+    );
+  }
+
+  handle.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragging = true;
+    handle.classList.add("dragging");
+    document.body.classList.add("panel-resizing");
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+})();
+
 // ── Tab Strip Drag ──
 document.getElementById("tab-strip").addEventListener("mousedown", (e) => {
   const attr = e.target.getAttribute("data-tauri-drag-region");
@@ -1414,8 +2004,13 @@ updateContentLayout().then(async () => {
   tabs = result.tabs;
   activeTabId = result.active_tab;
   renderTabs();
-  // Navigate first tab to homepage
+  // Load settings: apply persisted side panel width, then navigate
+  // to the homepage. The width is applied via the CSS variable before
+  // any panel open so the first open() uses the correct size.
   const settings = await invoke("get_settings");
+  if (typeof settings.side_panel_width === "number") {
+    setPanelWidth(settings.side_panel_width);
+  }
   navigate(settings.homepage || "titan");
 
   // Check for updates in the background (non-blocking, delayed slightly

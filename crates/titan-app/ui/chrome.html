@@ -101,6 +101,9 @@
 
   <!-- Side panel -->
   <div id="side-panel" style="display:none;">
+    <!-- Drag handle on the left edge: click + drag to resize the
+         side panel (and, inversely, shrink the content webview). -->
+    <div id="side-panel-resize" title="Drag to resize"></div>
     <div id="panel-header">
       <span id="panel-title"></span>
     </div>
@@ -120,16 +123,128 @@
       </div>
       <!-- Dev console view -->
       <div id="panel-console" style="display:none;">
-        <div id="console-log"></div>
-        <div id="console-input-wrap">
-          <span id="console-prompt">&gt;</span>
-          <input
-            id="console-input"
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="evaluate JS in active tab (e.g. await window.nostr.getPublicKey())"
-          >
+        <!-- Tab strip for logs / network / application -->
+        <div id="devtools-tabs">
+          <button class="devtools-tab active" data-devtools-tab="logs">Logs</button>
+          <button class="devtools-tab" data-devtools-tab="network">
+            Network
+            <span id="devtools-network-count" class="devtools-tab-badge" style="display:none;">0</span>
+          </button>
+          <button class="devtools-tab" data-devtools-tab="application">Application</button>
+          <div class="devtools-tab-actions">
+            <button id="devtools-clear" class="devtools-tab-action" title="Clear current tab">Clear</button>
+          </div>
+        </div>
+
+        <!-- Logs + JS REPL (existing) -->
+        <div id="devtools-tab-logs" class="devtools-tab-body">
+          <div id="logs-toolbar">
+            <select id="logs-level-filter" title="Minimum log level">
+              <option value="all">All</option>
+              <option value="debug">Debug+</option>
+              <option value="info" selected>Info+</option>
+              <option value="warn">Warn+</option>
+              <option value="error">Errors</option>
+            </select>
+            <input
+              type="text"
+              id="logs-target-filter"
+              placeholder="filter by source (e.g. titan_resolver)"
+              spellcheck="false"
+              autocomplete="off"
+            >
+            <span id="logs-hidden-count"></span>
+          </div>
+          <div id="console-log"></div>
+          <div id="console-input-wrap">
+            <span id="console-prompt">&gt;</span>
+            <input
+              id="console-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="evaluate JS in active tab (e.g. await window.nostr.getPublicKey())"
+            >
+          </div>
+        </div>
+
+        <!-- Network: request log with copy-as-cURL -->
+        <div id="devtools-tab-network" class="devtools-tab-body" style="display:none;">
+          <div id="network-toolbar">
+            <label class="network-record-label">
+              <input type="checkbox" id="network-record" checked>
+              Record
+            </label>
+            <span id="network-filter-wrap">
+              <input
+                type="text"
+                id="network-filter"
+                placeholder="filter by URL"
+                spellcheck="false"
+                autocomplete="off"
+              >
+            </span>
+            <span id="network-stats"></span>
+          </div>
+          <div id="network-table-wrap">
+            <table id="network-table">
+              <thead>
+                <tr>
+                  <th class="col-method">Method</th>
+                  <th class="col-status">Status</th>
+                  <th class="col-url">URL</th>
+                  <th class="col-type">Type</th>
+                  <th class="col-time">Time</th>
+                </tr>
+              </thead>
+              <tbody id="network-table-body"></tbody>
+            </table>
+            <div id="network-empty">
+              No network activity yet. Navigate or interact with the page.
+            </div>
+          </div>
+          <div id="network-detail" style="display:none;"></div>
+        </div>
+
+        <!-- Application: local/session storage + cookies -->
+        <div id="devtools-tab-application" class="devtools-tab-body" style="display:none;">
+          <div id="application-toolbar">
+            <button id="application-refresh" class="devtools-tab-action">Refresh</button>
+            <span id="application-origin" class="application-origin-label"></span>
+          </div>
+          <div class="application-section">
+            <div class="application-section-header">
+              <span>Local Storage</span>
+              <button class="application-clear-all" data-clear="localStorage">Clear all</button>
+            </div>
+            <table class="application-table" id="application-local">
+              <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="application-empty" data-for="localStorage">empty</div>
+          </div>
+          <div class="application-section">
+            <div class="application-section-header">
+              <span>Session Storage</span>
+              <button class="application-clear-all" data-clear="sessionStorage">Clear all</button>
+            </div>
+            <table class="application-table" id="application-session">
+              <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="application-empty" data-for="sessionStorage">empty</div>
+          </div>
+          <div class="application-section">
+            <div class="application-section-header">
+              <span>Cookies</span>
+              <button class="application-clear-all" data-clear="cookies">Clear all</button>
+            </div>
+            <table class="application-table" id="application-cookies">
+              <thead><tr><th>Name</th><th>Value</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="application-empty" data-for="cookies">empty</div>
+          </div>
         </div>
       </div>
       <!-- Settings view -->
