@@ -163,5 +163,37 @@ jobs:
             latest.json
           generate_release_notes: true
           draft: false
+          # The body below is prepended to the auto-generated commit
+          # changelog. Every release needs the macOS quarantine note —
+          # Titan bundles are unsigned, so Gatekeeper blocks the first
+          # launch until the quarantine extended attribute is cleared.
+          # Users who can't find this instruction think the app is
+          # broken, so it goes at the top of every release page.
+          body: |
+            ## Install
+
+            **macOS (Apple Silicon)** — download the `.dmg` and drag Titan to Applications.
+
+            > **⚠ Unsigned build.** macOS Gatekeeper will block the first launch. Run this once to remove the quarantine attribute:
+            >
+            > ```
+            > xattr -d com.apple.quarantine /Applications/Titan.app
+            > ```
+            >
+            > Then open Titan normally. You only need to do this the first time you install (or after each upgrade if you used the `.dmg` route — the in-app auto-updater does not re-quarantine).
+
+            **Linux (x86_64)** — download the `.AppImage`, `chmod +x`, and run. Or install the `.deb` on Debian / Ubuntu.
+
+            **Windows (x86_64)** — download the `.msi` or `.exe` installer and run. WebView2 is bundled via `embedBootstrapper`, so no separate runtime download is needed.
+
+            ## Auto-update
+
+            If you already have Titan installed, the auto-updater will notify you on next launch. Updates are signed with minisign — the updater verifies the signature before replacing the app, so you don't need to redo the quarantine workaround on update.
+
+            ## Verify signature (optional)
+
+            The `.sig` files next to each bundle are minisign signatures over the bundle payload. The Titan updater pubkey is embedded in the app; if you want to verify manually, see the `plugins.updater.pubkey` field in `crates/titan-app/tauri.conf.json`.
+
+            ---
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
