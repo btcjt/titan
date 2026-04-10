@@ -109,7 +109,13 @@ Phases 1–9 complete. Phase 10 (built-in signer) is mostly done — key managem
 
 `nsite://titan` is live — registered on Bitcoin mainnet, published as nsite v2, loads as the browser's default homepage. Name lookups via Nostr relays with race-then-linger search. No Bitcoin Core required.
 
-**Installing an unsigned macOS build?** If Gatekeeper blocks the app, strip the quarantine flag with `xattr -d com.apple.quarantine /Applications/Titan.app`.
+**Installing an unsigned macOS build?** Gatekeeper blocks the DMG on first open. Clear the quarantine attribute from the downloaded DMG **before** mounting it:
+
+```bash
+xattr -d com.apple.quarantine ~/Downloads/Titan_<version>_aarch64.dmg
+```
+
+Then double-click the DMG and drag Titan to Applications normally. Every release page on GitHub shows the exact command with the version filled in.
 
 ## Building
 
