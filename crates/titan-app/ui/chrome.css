@@ -562,11 +562,74 @@ body.panel-open #update-banner {
   color: var(--amber);
 }
 
-/* Panel button active state */
+/* Panel button active state — applies to info btn and menu btn when
+   their corresponding panel is open */
 #toolbar button.panel-active {
   background: var(--amber-glow);
   color: var(--amber);
   border-color: var(--amber-dim);
+}
+
+/* ── Kebab Menu (renders in the side panel) ── */
+
+#btn-menu {
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+
+#panel-menu {
+  padding: 6px 0;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.3;
+}
+
+.menu-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.menu-item:active {
+  background: var(--amber-glow);
+  color: var(--amber);
+}
+
+.menu-icon {
+  width: 18px;
+  text-align: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.menu-shortcut {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  letter-spacing: 0.3px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+.menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 10px;
 }
 
 /* ── Side Panel ── */
@@ -740,53 +803,7 @@ body.panel-console #panel-content {
   -webkit-user-select: text;
 }
 
-.info-section {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.info-section:last-child {
-  border-bottom: none;
-}
-
-.info-label {
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: 4px;
-}
-
-.info-value {
-  color: var(--text-primary);
-  font-size: 13px;
-  word-break: break-all;
-  line-height: 1.4;
-}
-
-.info-value.mono {
-  font-family: "SF Mono", "Fira Code", monospace;
-}
-
-.info-value.small {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.info-value a {
-  color: var(--amber);
-  text-decoration: none;
-}
-
-.info-value a:hover {
-  color: var(--text-primary);
-}
-
-.info-note {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-style: italic;
-}
+/* ── Site Info: shared primitives ── */
 
 .info-loading,
 .info-empty {
@@ -796,46 +813,172 @@ body.panel-console #panel-content {
   font-size: 12px;
 }
 
-.info-link {
-  color: var(--amber);
-  font-size: 12px;
-  text-decoration: none;
+.info-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 6px 14px;
 }
 
-.info-link:hover {
-  color: var(--text-primary);
+/* ── Site Info: identity card (top) ── */
+
+.info-identity {
+  padding: 16px 14px;
+  border-bottom: 1px solid var(--border);
+  text-align: center;
 }
 
-.info-avatar {
+.info-identity-avatar {
   display: flex;
   justify-content: center;
-  padding: 14px 14px 6px;
+  margin-bottom: 10px;
 }
 
-.info-avatar img {
-  width: 64px;
-  height: 64px;
+.info-identity-avatar img {
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   border: 2px solid var(--amber-dim);
   object-fit: cover;
 }
 
-.info-relays {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
+.info-identity-name {
+  color: var(--amber);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.3;
 }
 
-.info-relay {
+.info-identity-author {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.info-identity-npub {
+  color: var(--text-secondary);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+.info-identity-about {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 8px;
+  white-space: pre-wrap;
+  text-align: left;
+}
+
+/* ── Site Info: freshness + provenance (middle) ── */
+
+.info-meta {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.info-meta-row {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
   font-size: 11px;
   line-height: 1.3;
 }
 
-.info-relay-marker {
+.info-meta-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  min-width: 80px;
+}
+
+.info-meta-value {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.info-meta-value a {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.info-meta-value a:hover {
+  color: var(--amber);
+}
+
+.info-meta-value.mono {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+}
+
+/* ── Site Info: infrastructure (collapsible bottom) ── */
+
+.info-infra {
+  border-bottom: 1px solid var(--border);
+}
+
+.info-infra summary {
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.info-infra summary::before {
+  content: "\25B8"; /* right-pointing triangle */
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+
+.info-infra[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.info-infra summary:hover {
+  color: var(--text-primary);
+}
+
+.info-infra-body {
+  padding: 0 14px 12px;
+}
+
+.info-infra-group {
+  margin-bottom: 10px;
+}
+
+.info-infra-group:last-child {
+  margin-bottom: 0;
+}
+
+.info-infra-group-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.info-infra-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 1px 0;
+}
+
+.info-infra-item .relay-marker {
   flex-shrink: 0;
   font-family: "SF Mono", "Fira Code", monospace;
   font-size: 9px;
@@ -849,20 +992,55 @@ body.panel-console #panel-content {
   text-align: center;
 }
 
-.info-relay-marker.marker-read {
+.info-infra-item .relay-marker.marker-read {
   background: #1a2e2a;
   color: #6b6;
 }
 
-.info-relay-marker.marker-write {
+.info-infra-item .relay-marker.marker-write {
   background: #2e2a1a;
   color: #cb6;
 }
 
-.info-relay-url {
+.info-infra-url {
   color: var(--text-secondary);
   word-break: break-all;
   font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+}
+
+.info-infra-url a {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.info-infra-url a:hover {
+  color: var(--amber);
+  text-decoration: underline;
+}
+
+.info-infra-mono {
+  color: var(--text-secondary);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+  word-break: break-all;
+  padding: 2px 0;
+}
+
+/* ── Site Info: footer link ── */
+
+.info-footer {
+  padding: 10px 14px;
+}
+
+.info-footer a {
+  color: var(--amber);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.info-footer a:hover {
+  color: var(--text-primary);
 }
 
 /* ── Signer Panel ── */
@@ -1753,19 +1931,3 @@ body.panel-console #panel-console {
   border-color: var(--text-muted);
 }
 
-.settings-btn-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.settings-kbd-hint {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 11px;
-  color: var(--text-muted);
-  padding: 3px 8px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  letter-spacing: 0.5px;
-}

@@ -368,6 +368,33 @@ impl Resolver {
         Ok(data)
     }
 
+    /// Fetch the manifest event's `created_at` timestamp for a site.
+    /// This is the "last published" time shown in the site info panel.
+    /// Does NOT parse the manifest — just returns the event timestamp.
+    pub async fn fetch_manifest_updated_at(
+        &self,
+        pubkey: &[u8; 32],
+        site_name: Option<&str>,
+    ) -> Result<Option<u64>, ResolverError> {
+        let pk = PublicKey::from_slice(pubkey)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+        let event = self.relays.fetch_manifest(&pk, site_name).await?;
+        Ok(event.map(|e| e.created_at.as_u64()))
+    }
+
+    /// Fetch the Blossom server list (kind 10063) for a pubkey. Cached
+    /// for 1 hour. Returns the `server` tag URLs from the newest event.
+    /// Returns an empty vec if the pubkey hasn't published a 10063 event.
+    pub async fn fetch_blossom_servers_for_pubkey(
+        &self,
+        pubkey: &[u8; 32],
+    ) -> Result<Vec<String>, ResolverError> {
+        let pk = PublicKey::from_slice(pubkey)
+            .map_err(|e| relay::RelayError::Fetch(e.to_string()))?;
+        let pubkey_hex = hex::encode(pubkey);
+        Ok(self.get_blossom_list(&pk, &pubkey_hex).await)
+    }
+
     /// Get or fetch the Blossom server list for a pubkey.
     async fn get_blossom_list(&self, pubkey: &PublicKey, pubkey_hex: &str) -> Vec<String> {
         // Check cache

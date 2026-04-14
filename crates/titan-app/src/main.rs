@@ -946,27 +946,39 @@ enum SiteInfo {
         npub: String,
         owner_txid: String,
         owner_vout: u32,
-        txid: String,
         block_height: u64,
         profile: Option<ProfileInfo>,
         relays: Vec<RelayEntry>,
+        blossom_servers: Vec<String>,
+        /// Unix seconds when the nsite manifest was last published.
+        manifest_updated_at: Option<u64>,
     },
     Npub {
         pubkey: String,
         npub: String,
         profile: Option<ProfileInfo>,
         relays: Vec<RelayEntry>,
+        blossom_servers: Vec<String>,
+        manifest_updated_at: Option<u64>,
     },
     Internal,
 }
 
-async fn fetch_profile_and_relays(
+/// Fetch profile, relay list, blossom servers, and manifest timestamp
+/// for a pubkey. All four queries run concurrently. `site_name` is
+/// passed to the manifest fetch so we look up the right kind (35128
+/// for a Bitcoin name, 15128 for a root manifest).
+async fn fetch_site_metadata(
     resolver: &titan_resolver::Resolver,
     pubkey: &[u8; 32],
-) -> (Option<ProfileInfo>, Vec<RelayEntry>) {
+    site_name: Option<&str>,
+) -> (Option<ProfileInfo>, Vec<RelayEntry>, Vec<String>, Option<u64>) {
     let profile_fut = resolver.fetch_profile(pubkey);
     let relays_fut = resolver.fetch_relay_list_for_pubkey(pubkey);
-    let (profile_res, relays_res) = tokio::join!(profile_fut, relays_fut);
+    let blossom_fut = resolver.fetch_blossom_servers_for_pubkey(pubkey);
+    let manifest_fut = resolver.fetch_manifest_updated_at(pubkey, site_name);
+    let (profile_res, relays_res, blossom_res, manifest_res) =
+        tokio::join!(profile_fut, relays_fut, blossom_fut, manifest_fut);
 
     let profile = profile_res.ok().flatten().map(|p| ProfileInfo {
         name: p.name,
@@ -988,7 +1000,10 @@ async fn fetch_profile_and_relays(
         })
         .collect();
 
-    (profile, relays)
+    let blossom = blossom_res.unwrap_or_default();
+    let manifest_ts = manifest_res.ok().flatten();
+
+    (profile, relays, blossom, manifest_ts)
 }
 
 #[tauri::command]
@@ -1012,12 +1027,15 @@ async fn get_site_info(
     if host.starts_with("npub1") {
         let pk = decode_npub(host)?;
         let pubkey_hex = hex::encode(pk);
-        let (profile, relays) = fetch_profile_and_relays(resolver, &pk).await;
+        let (profile, relays, blossom_servers, manifest_updated_at) =
+            fetch_site_metadata(resolver, &pk, None).await;
         return Ok(SiteInfo::Npub {
             pubkey: pubkey_hex,
             npub: host.to_string(),
             profile,
             relays,
+            blossom_servers,
+            manifest_updated_at,
         });
     }
 
@@ -1029,12 +1047,15 @@ async fn get_site_info(
         pk_arr.copy_from_slice(&bytes);
         let pk = PublicKey::from_slice(&bytes).map_err(|e| e.to_string())?;
         let npub = pk.to_bech32().unwrap_or_else(|_| host.to_string());
-        let (profile, relays) = fetch_profile_and_relays(resolver, &pk_arr).await;
+        let (profile, relays, blossom_servers, manifest_updated_at) =
+            fetch_site_metadata(resolver, &pk_arr, None).await;
         return Ok(SiteInfo::Npub {
             pubkey: host.to_lowercase(),
             npub,
             profile,
             relays,
+            blossom_servers,
+            manifest_updated_at,
         });
     }
 
@@ -1052,17 +1073,19 @@ async fn get_site_info(
             pk_arr.copy_from_slice(&bytes);
             let pk = PublicKey::from_slice(&bytes).map_err(|e| e.to_string())?;
             let npub = pk.to_bech32().unwrap_or_else(|_| r.pubkey_hex.clone());
-            let (profile, relays) = fetch_profile_and_relays(resolver, &pk_arr).await;
+            let (profile, relays, blossom_servers, manifest_updated_at) =
+                fetch_site_metadata(resolver, &pk_arr, Some(&r.name)).await;
             Ok(SiteInfo::Name {
                 name: r.name,
                 pubkey: r.pubkey_hex,
                 npub,
                 owner_txid: r.owner_txid,
                 owner_vout: r.owner_vout,
-                txid: r.txid,
                 block_height: r.block_height,
                 profile,
                 relays,
+                blossom_servers,
+                manifest_updated_at,
             })
         }
         None => Err(format!("Name '{host}' not found")),

@@ -7,7 +7,6 @@ const btnBack = document.getElementById("btn-back");
 const btnForward = document.getElementById("btn-forward");
 const btnRefresh = document.getElementById("btn-refresh");
 const btnStar = document.getElementById("btn-star");
-const btnBookmarks = document.getElementById("btn-bookmarks");
 const loadingBar = document.getElementById("loading-bar");
 const sidePanel = document.getElementById("side-panel");
 const panelTitle = document.getElementById("panel-title");
@@ -264,58 +263,106 @@ async function renderBookmarks() {
 }
 
 // ── Site Info Panel ──
+//
+// Three visual zones:
+//   1. Identity card — avatar, name, author, about
+//   2. Freshness + provenance — published date, registration, UTXO
+//   3. Infrastructure — relays, blossom, npub/hex (collapsed by default)
 
-function renderProfileSection(profile) {
-  if (!profile) return "";
-  const displayName = profile.display_name || profile.name;
-  const parts = [];
-  if (profile.picture && isSafeHttpUrl(profile.picture)) {
-    parts.push(`<div class="info-avatar"><img src="${escapeAttr(profile.picture)}" alt="" onerror="this.style.display='none'"></div>`);
-  }
-  if (displayName) {
-    parts.push(`<div class="info-section"><div class="info-label">Name</div><div class="info-value">${escapeHtml(displayName)}</div></div>`);
-  }
-  if (profile.nip05) {
-    parts.push(`<div class="info-section"><div class="info-label">NIP-05</div><div class="info-value mono small">${escapeHtml(profile.nip05)}</div></div>`);
-  }
-  if (profile.about) {
-    parts.push(`<div class="info-section"><div class="info-label">About</div><div class="info-value" style="white-space:pre-wrap;">${escapeHtml(profile.about)}</div></div>`);
-  }
-  if (profile.website) {
-    // Only render the website as a clickable link if it's an http(s) URL.
-    // A kind-0 profile with `website: "javascript:..."` would otherwise
-    // execute in the chrome webview context when clicked.
-    if (isSafeHttpUrl(profile.website)) {
-      parts.push(`<div class="info-section"><div class="info-label">Website</div><div class="info-value small"><a href="${escapeAttr(profile.website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(profile.website)}</a></div></div>`);
-    } else {
-      parts.push(`<div class="info-section"><div class="info-label">Website</div><div class="info-value small">${escapeHtml(profile.website)}</div></div>`);
-    }
-  }
-  if (profile.lud16) {
-    parts.push(`<div class="info-section"><div class="info-label">Lightning</div><div class="info-value mono small">${escapeHtml(profile.lud16)}</div></div>`);
-  }
-  if (profile.updated_at) {
-    const date = new Date(profile.updated_at * 1000);
-    parts.push(`<div class="info-section"><div class="info-label">Profile updated</div><div class="info-value small">${date.toLocaleDateString()} ${date.toLocaleTimeString()}</div></div>`);
-  }
-  return parts.join("");
+function formatTimestamp(ts) {
+  if (!ts) return null;
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString() + ", " + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function renderRelaysSection(relays) {
-  if (!relays || relays.length === 0) return "";
-  const items = relays.map((r) => {
-    const markerLabel = r.marker === "write" ? "write" : r.marker === "read" ? "read" : "r/w";
-    return `<div class="info-relay">
-      <span class="info-relay-marker marker-${r.marker}">${markerLabel}</span>
-      <span class="info-relay-url">${escapeHtml(r.url)}</span>
+function buildIdentityCard(profile, siteName, npub) {
+  const displayName = (profile && (profile.display_name || profile.name)) || siteName || null;
+  const about = profile && profile.about ? profile.about : null;
+  const picture = profile && profile.picture && isSafeHttpUrl(profile.picture) ? profile.picture : null;
+  // For Bitcoin-name sites the author is the display_name from the
+  // profile. For npub sites the npub IS the identity.
+  const authorLine = displayName && siteName && displayName.toLowerCase() !== siteName.toLowerCase()
+    ? `<div class="info-identity-author">by ${escapeHtml(displayName)}</div>`
+    : "";
+
+  return `<div class="info-identity">
+    ${picture ? `<div class="info-identity-avatar"><img src="${escapeAttr(picture)}" alt="" onerror="this.style.display='none'"></div>` : ""}
+    ${siteName
+      ? `<div class="info-identity-name">${escapeHtml(siteName)}</div>${authorLine}`
+      : displayName
+        ? `<div class="info-identity-name">${escapeHtml(displayName)}</div>`
+        : `<div class="info-identity-npub">${escapeHtml(npub || "")}</div>`
+    }
+    ${!siteName && npub ? `<div class="info-identity-npub">${escapeHtml(npub)}</div>` : ""}
+    ${about ? `<div class="info-identity-about">${escapeHtml(about)}</div>` : ""}
+  </div>`;
+}
+
+function buildMetaSection(rows) {
+  // rows is an array of { label, value, mono?, html? }
+  const filtered = rows.filter((r) => r.value);
+  if (filtered.length === 0) return "";
+  const items = filtered.map((r) => {
+    const cls = r.mono ? ' class="info-meta-value mono"' : ' class="info-meta-value"';
+    const val = r.html ? r.value : escapeHtml(r.value);
+    return `<div class="info-meta-row">
+      <span class="info-meta-label">${escapeHtml(r.label)}</span>
+      <span${cls}>${val}</span>
     </div>`;
   }).join("");
-  return `
-    <div class="info-section">
-      <div class="info-label">Relays (NIP-65)</div>
-      <div class="info-relays">${items}</div>
-    </div>
-  `;
+  return `<div class="info-meta">${items}</div>`;
+}
+
+function buildInfraSection(relays, blossomServers, npub, pubkeyHex) {
+  const parts = [];
+
+  if (relays && relays.length > 0) {
+    const items = relays.map((r) => {
+      const markerLabel = r.marker === "write" ? "write" : r.marker === "read" ? "read" : "r/w";
+      return `<div class="info-infra-item">
+        <span class="relay-marker marker-${escapeAttr(r.marker)}">${markerLabel}</span>
+        <span class="info-infra-url">${escapeHtml(r.url)}</span>
+      </div>`;
+    }).join("");
+    parts.push(`<div class="info-infra-group">
+      <div class="info-infra-group-label">Relays (${relays.length})</div>
+      ${items}
+    </div>`);
+  }
+
+  if (blossomServers && blossomServers.length > 0) {
+    const items = blossomServers.map((url) => {
+      const inner = isSafeHttpUrl(url)
+        ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`
+        : escapeHtml(url);
+      return `<div class="info-infra-item"><span class="info-infra-url">${inner}</span></div>`;
+    }).join("");
+    parts.push(`<div class="info-infra-group">
+      <div class="info-infra-group-label">Blossom (${blossomServers.length})</div>
+      ${items}
+    </div>`);
+  }
+
+  if (npub) {
+    parts.push(`<div class="info-infra-group">
+      <div class="info-infra-group-label">Resolves to</div>
+      <div class="info-infra-mono">${escapeHtml(npub)}</div>
+    </div>`);
+  }
+
+  if (pubkeyHex) {
+    parts.push(`<div class="info-infra-group">
+      <div class="info-infra-group-label">Pubkey (hex)</div>
+      <div class="info-infra-mono">${escapeHtml(pubkeyHex)}</div>
+    </div>`);
+  }
+
+  if (parts.length === 0) return "";
+
+  return `<details class="info-infra">
+    <summary>Infrastructure</summary>
+    <div class="info-infra-body">${parts.join("")}</div>
+  </details>`;
 }
 
 async function renderSiteInfo() {
@@ -330,69 +377,55 @@ async function renderSiteInfo() {
     let html = "";
 
     if (info.kind === "name") {
-      // Defensive: the indexer should only publish 64-char hex txids, but
-      // validate before interpolating into an href so a malformed event
-      // cannot break out of the attribute.
+      // Identity card
+      html += buildIdentityCard(info.profile, info.name, info.npub);
+
+      // Freshness + provenance
+      const published = formatTimestamp(info.manifest_updated_at);
       const ownerTxidSafe = isHex(info.owner_txid, 64) ? info.owner_txid : "";
-      const txidSafe = isHex(info.txid, 64) ? info.txid : "";
       const ownerVout = Number.isInteger(info.owner_vout) ? info.owner_vout : 0;
-      const utxoShort = ownerTxidSafe ? ownerTxidSafe.slice(0, 12) + "..." + ownerTxidSafe.slice(-8) : "invalid";
-      const txShort = txidSafe ? txidSafe.slice(0, 12) + "..." + txidSafe.slice(-8) : "invalid";
-      const ownerTxLink = ownerTxidSafe
+      const utxoShort = ownerTxidSafe
+        ? ownerTxidSafe.slice(0, 12) + "..." + ownerTxidSafe.slice(-8)
+        : "invalid";
+      const utxoHtml = ownerTxidSafe
         ? `<a href="https://mempool.space/tx/${ownerTxidSafe}" target="_blank" rel="noopener noreferrer">${escapeHtml(utxoShort)}:${ownerVout}</a>`
-        : `<span>${escapeHtml(utxoShort)}</span>`;
-      const txLink = txidSafe
-        ? `<a href="https://mempool.space/tx/${txidSafe}" target="_blank" rel="noopener noreferrer">${escapeHtml(txShort)}</a>`
-        : `<span>${escapeHtml(txShort)}</span>`;
-      html += `
-        <div class="info-section">
-          <div class="info-label">Bitcoin Name</div>
-          <div class="info-value" style="color:var(--amber);font-size:16px;">${escapeHtml(info.name)}</div>
-        </div>
-        ${renderProfileSection(info.profile)}
-        <div class="info-section">
-          <div class="info-label">Resolves to</div>
-          <div class="info-value mono small">${escapeHtml(info.npub)}</div>
-        </div>
-        <div class="info-section">
-          <div class="info-label">Owner UTXO</div>
-          <div class="info-value mono small">${ownerTxLink}</div>
-        </div>
-        <div class="info-section">
-          <div class="info-label">Last action tx</div>
-          <div class="info-value mono small">${txLink}</div>
-        </div>
-        <div class="info-section">
-          <div class="info-label">Registered at block</div>
-          <div class="info-value mono">${info.block_height.toLocaleString()}</div>
-        </div>
-        ${renderRelaysSection(info.relays)}
-        <div class="info-section">
-          <a class="info-link" href="#" data-nav="${escapeAttr(info.name)}">View full details &rarr;</a>
-        </div>
-      `;
+        : escapeHtml(utxoShort);
+
+      html += buildMetaSection([
+        { label: "Published", value: published },
+        { label: "Block", value: info.block_height ? info.block_height.toLocaleString() : null },
+        { label: "Owner UTXO", value: utxoHtml, mono: true, html: true },
+      ]);
+
+      // Infrastructure (collapsed)
+      html += buildInfraSection(info.relays, info.blossom_servers, info.npub, info.pubkey);
+
+      // Footer link
+      html += `<div class="info-footer">
+        <a href="#" data-nav="${escapeAttr(info.name)}">View full details on titan &rarr;</a>
+      </div>`;
+
     } else if (info.kind === "npub") {
-      html += `
-        ${renderProfileSection(info.profile)}
-        <div class="info-section">
-          <div class="info-label">npub</div>
-          <div class="info-value mono small">${escapeHtml(info.npub)}</div>
-        </div>
-        <div class="info-section">
-          <div class="info-label">Pubkey (hex)</div>
-          <div class="info-value mono small">${escapeHtml(info.pubkey)}</div>
-        </div>
-        ${renderRelaysSection(info.relays)}
-        <div class="info-section">
-          <div class="info-note">Direct npub reference. No Bitcoin name is registered.</div>
-        </div>
-      `;
+      // Identity card — npub IS the identity
+      html += buildIdentityCard(info.profile, null, info.npub);
+
+      // Freshness
+      const published = formatTimestamp(info.manifest_updated_at);
+      html += buildMetaSection([
+        { label: "Published", value: published },
+      ]);
+
+      // Infrastructure
+      html += buildInfraSection(info.relays, info.blossom_servers, info.npub, info.pubkey);
+
+      // Note
+      html += `<div class="info-note">Direct npub reference. No Bitcoin name is registered.</div>`;
     }
 
     infoContent.innerHTML = html;
     infoContent.querySelector("[data-nav]")?.addEventListener("click", (e) => {
       e.preventDefault();
-      const name = e.target.dataset.nav;
+      const name = e.currentTarget.dataset.nav;
       navigate(`titan/name?q=${name}`);
       closePanel();
     });
@@ -596,32 +629,19 @@ listen("signer-prompt", () => {
 let pendingUpdate = null;
 
 async function checkForUpdate(manual) {
-  const statusEl = document.getElementById("settings-update-status");
-  if (statusEl && manual) {
-    statusEl.textContent = "Checking...";
-  }
   try {
     const info = await invoke("check_for_update");
     if (info.available) {
       pendingUpdate = info;
       showUpdateBanner(info);
-      if (statusEl) {
-        statusEl.innerHTML = `Update available: <span style="color:var(--amber);">${escapeHtml(info.new_version)}</span>`;
-      }
       log("info", `update available: ${info.new_version}`);
     } else {
       pendingUpdate = null;
       hideUpdateBanner();
-      if (statusEl) {
-        statusEl.textContent = `Up to date (v${info.current_version})`;
-      }
       if (manual) log("info", `already on latest version (${info.current_version})`);
     }
   } catch (err) {
     const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
-    if (statusEl) {
-      statusEl.textContent = "Check failed: " + msg;
-    }
     log("error", "update check failed: " + msg);
   }
 }
@@ -658,26 +678,6 @@ async function installPendingUpdate() {
 
 document.getElementById("update-banner-install").addEventListener("click", installPendingUpdate);
 document.getElementById("update-banner-dismiss").addEventListener("click", hideUpdateBanner);
-document.getElementById("settings-check-update").addEventListener("click", () => checkForUpdate(true));
-document.getElementById("settings-open-console").addEventListener("click", () => openPanel("console"));
-
-// Show the OS-appropriate keyboard shortcut next to the "Open developer
-// console" button. Mac uses Cmd+Opt+K to match its own devtools
-// convention; other OSes use Ctrl+Shift+K.
-(function setConsoleShortcutHint() {
-  const hintEl = document.getElementById("settings-console-shortcut");
-  if (!hintEl) return;
-  // Prefer userAgentData where available (Chromium 90+); fall back to
-  // sniffing the UA string. `navigator.platform` is deprecated so we
-  // avoid it entirely.
-  const uaPlatform =
-    (navigator.userAgentData && navigator.userAgentData.platform) || "";
-  const ua = navigator.userAgent || "";
-  const isMac =
-    uaPlatform.toLowerCase().includes("mac") ||
-    /\bMac OS X\b|\bMacintosh\b/.test(ua);
-  hintEl.textContent = isMac ? "⌘⌥K" : "Ctrl+Shift+K";
-})();
 
 // ── Signer Panel ──
 
@@ -1009,28 +1009,32 @@ async function renderSignerAuditLog() {
 
 // ── Generic Panel System ──
 
+const panelMenu = document.getElementById("panel-menu");
+
 async function openPanel(name) {
   if (activePanel === name) {
     closePanel();
     return;
   }
 
+  // Hide all panel views
+  panelMenu.style.display = "none";
   panelBookmarks.style.display = "none";
   panelConsole.style.display = "none";
   panelSettings.style.display = "none";
   panelInfo.style.display = "none";
   panelSigner.style.display = "none";
 
-  if (name === "bookmarks") {
+  if (name === "menu") {
+    panelTitle.textContent = "Menu";
+    panelMenu.style.display = "block";
+  } else if (name === "bookmarks") {
     panelTitle.textContent = "Bookmarks";
     panelBookmarks.style.display = "block";
     await renderBookmarks();
   } else if (name === "console") {
-    panelTitle.textContent = "Console";
+    panelTitle.textContent = "Developer Tools";
     panelConsole.style.display = "block";
-    // Default to the logs tab when opening the console panel.
-    // Individual tabs persist their own state between opens, but the
-    // active tab resets so the JS REPL input is always one click away.
     switchDevtoolsTab("logs");
   } else if (name === "settings") {
     panelTitle.textContent = "Settings";
@@ -1064,13 +1068,18 @@ async function closePanel() {
 }
 
 function updatePanelButtonState() {
-  document.querySelectorAll("#toolbar button[data-panel]").forEach((btn) => {
-    if (btn.dataset.panel === activePanel) {
-      btn.classList.add("panel-active");
-    } else {
-      btn.classList.remove("panel-active");
-    }
-  });
+  // Info button in the toolbar gets active state when the info panel is open
+  const btnInfo = document.getElementById("btn-info");
+  if (btnInfo) {
+    btnInfo.classList.toggle("panel-active", activePanel === "info");
+  }
+  // Menu button gets active when the menu panel itself is open, or
+  // when any panel reachable from the menu is open
+  const btnMenuEl = document.getElementById("btn-menu");
+  const menuPanels = ["menu", "signer", "bookmarks", "settings", "console"];
+  if (btnMenuEl) {
+    btnMenuEl.classList.toggle("panel-active", menuPanels.includes(activePanel));
+  }
 }
 
 // ── Dev Console ──
@@ -1749,11 +1758,59 @@ btnBack.addEventListener("click", () => invoke("go_back"));
 btnForward.addEventListener("click", () => invoke("go_forward"));
 btnRefresh.addEventListener("click", () => invoke("refresh"));
 document.getElementById("btn-info").addEventListener("click", () => openPanel("info"));
-document.getElementById("btn-signer").addEventListener("click", () => openPanel("signer"));
 btnStar.addEventListener("click", toggleBookmark);
-btnBookmarks.addEventListener("click", () => openPanel("bookmarks"));
-document.getElementById("btn-settings").addEventListener("click", () => openPanel("settings"));
-document.getElementById("btn-console").addEventListener("click", () => openPanel("console"));
+
+// ── Kebab Menu ──
+//
+// The ⋮ button opens a "menu" panel in the side panel. Clicking a
+// menu item switches to the target panel. This avoids z-order
+// issues with a dropdown overlapping the content webview (which is
+// a native layer above the chrome DOM).
+
+document.getElementById("btn-menu").addEventListener("click", () => openPanel("menu"));
+
+// Menu item click handlers — each item opens a panel or runs an
+// action, replacing the menu panel with the target.
+for (const item of document.querySelectorAll(".menu-item")) {
+  item.addEventListener("click", () => {
+    const action = item.dataset.action;
+    switch (action) {
+      case "signer":
+        openPanel("signer");
+        break;
+      case "bookmarks":
+        openPanel("bookmarks");
+        break;
+      case "info":
+        openPanel("info");
+        break;
+      case "settings":
+        openPanel("settings");
+        break;
+      case "console":
+        openPanel("console");
+        break;
+      case "check-update":
+        closePanel();
+        checkForUpdate(true);
+        break;
+    }
+  });
+}
+
+// Populate the dev console shortcut hint in the menu (same OS-aware
+// logic as the settings panel hint).
+(function setMenuConsoleShortcut() {
+  const el = document.getElementById("menu-console-shortcut");
+  if (!el) return;
+  const uaPlatform =
+    (navigator.userAgentData && navigator.userAgentData.platform) || "";
+  const ua = navigator.userAgent || "";
+  const isMac =
+    uaPlatform.toLowerCase().includes("mac") ||
+    /\bMac OS X\b|\bMacintosh\b/.test(ua);
+  el.textContent = isMac ? "⌘⌥K" : "Ctrl+Shift+K";
+})();
 document.getElementById("btn-new-tab").addEventListener("click", createTab);
 document.getElementById("settings-save").addEventListener("click", saveSettings);
 document.getElementById("settings-reset").addEventListener("click", resetSettings);

@@ -92,10 +92,7 @@
       >
     </div>
     <button id="btn-star" title="Bookmark (Cmd+D)">&#x2606;</button>
-    <button id="btn-signer" data-panel="signer" title="Signer (Nostr identity)">&#x1F511;</button>
-    <button id="btn-bookmarks" data-panel="bookmarks" title="Bookmarks">&#x1F516;</button>
-    <button id="btn-settings" data-panel="settings" title="Settings" style="font-size:13px;">&#x2699;</button>
-    <button id="btn-console" data-panel="console" title="Console (Cmd+Opt+K)" style="font-size:12px;display:none;">&#x2699;</button>
+    <button id="btn-menu" title="Menu">&#x22EE;</button>
   </div>
   <div id="loading-bar"></div>
 
@@ -108,6 +105,18 @@
       <span id="panel-title"></span>
     </div>
     <div id="panel-content">
+      <!-- Menu view -->
+      <div id="panel-menu" style="display:none;">
+        <button class="menu-item" data-action="signer"><span class="menu-icon">&#x1F511;</span>Signer</button>
+        <button class="menu-item" data-action="bookmarks"><span class="menu-icon">&#x1F516;</span>Bookmarks</button>
+        <div class="menu-separator"></div>
+        <button class="menu-item" data-action="info"><span class="menu-icon">&#x1F512;</span>Site info</button>
+        <div class="menu-separator"></div>
+        <button class="menu-item" data-action="settings"><span class="menu-icon">&#x2699;</span>Settings</button>
+        <button class="menu-item" data-action="console"><span class="menu-icon">&#x1F527;</span>Developer tools<span class="menu-shortcut" id="menu-console-shortcut"></span></button>
+        <div class="menu-separator"></div>
+        <button class="menu-item" data-action="check-update"><span class="menu-icon">&#x21BB;</span>Check for updates</button>
+      </div>
       <!-- Site info view -->
       <div id="panel-info" style="display:none;">
         <div id="info-content"></div>
@@ -273,21 +282,6 @@
           <label class="settings-label">Homepage</label>
           <input id="settings-homepage" class="settings-input" type="text" spellcheck="false" placeholder="titan">
           <div class="settings-hint">Default page on startup</div>
-        </div>
-        <div class="settings-section">
-          <label class="settings-label">Updates</label>
-          <div id="settings-update-status" style="font-size:11px;color:var(--text-muted);margin-bottom:6px;"></div>
-          <button id="settings-check-update" class="settings-btn-secondary">Check for updates</button>
-        </div>
-        <div class="settings-section">
-          <label class="settings-label">Developer</label>
-          <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
-            Evaluate JavaScript in the active tab and inspect logs from Titan internals.
-          </div>
-          <div class="settings-btn-row">
-            <button id="settings-open-console" class="settings-btn-secondary">Open developer console</button>
-            <span id="settings-console-shortcut" class="settings-kbd-hint"></span>
-          </div>
         </div>
         <div class="settings-section">
           <button id="settings-save" class="settings-btn">Save</button>
