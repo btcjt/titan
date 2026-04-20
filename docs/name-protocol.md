@@ -1,6 +1,6 @@
-# Titan Name Protocol (TNP)
+# NSIT Name Protocol
 
-Technical specification for the Bitcoin OP_RETURN name registration protocol.
+Technical specification for the Bitcoin OP_RETURN name registration protocol. NSIT is an open protocol — any client or browser can implement it.
 
 ## Wire Format
 

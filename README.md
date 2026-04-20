@@ -4,7 +4,7 @@
 
 Named after Titan, the largest moon of Saturn — shrouded in a dense amber atmosphere, hiding an entire world beneath.
 
-Titan is a desktop browser that resolves `nsite://` URLs using Nostr relay infrastructure and renders static websites stored on Blossom servers. It implements [NIP-5A](https://github.com/nostr-protocol/nips/blob/master/5A.md) (nsite v2) and introduces a Bitcoin-native name registration protocol for permanent, decentralized domain ownership.
+Titan is a desktop browser that resolves `nsite://` URLs using Nostr relay infrastructure and renders static websites stored on Blossom servers. It implements [NIP-5A](https://github.com/nostr-protocol/nips/blob/master/5A.md) (nsite v2) and the [NSIT name protocol](docs/name-protocol.md) — a Bitcoin-native name registration system for permanent, decentralized domain ownership.
 
 ## How It Works
 
@@ -50,9 +50,9 @@ That's it. Simple enough to say out loud, short enough for a billboard, permanen
 
 Two names registered for testing (`titan` and `bitcoin`). Everything else is unclaimed. Fair launch.
 
-## The Name Protocol
+## The NSIT Name Protocol
 
-Titan introduces a Bitcoin-native name system using OP_RETURN transactions. Names are permanent, first-in-chain-wins, and transferable.
+The NSIT name protocol is an open, Bitcoin-native name system using OP_RETURN transactions. Names are permanent, first-in-chain-wins, and transferable. Any client can implement it — Titan is the reference implementation.
 
 ```
 OP_RETURN payload (80 bytes max):
@@ -144,7 +144,7 @@ Nix users: `direnv allow` first
 
 - [Architecture](docs/architecture.md) — system design, resolution flow, event kinds
 - [Whitepaper](docs/whitepaper.md) — protocol design and security model
-- [Name Protocol](docs/name-protocol.md) — wire format, UTXO ownership, Nostr index
+- [NSIT Name Protocol](docs/name-protocol.md) — wire format, UTXO ownership, Nostr index
 - [Titan Bookmarks](docs/titan-bookmarks.md) — private cross-device bookmark sync (kind 10129)
 - [Roadmap](docs/roadmap.md) — build phases and status
 

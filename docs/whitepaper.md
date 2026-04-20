@@ -1,10 +1,10 @@
-# Titan: A Bitcoin-Native Name System for the Nostr Web
+# NSIT: A Bitcoin-Native Name System for the Nostr Web
 
 **Version 0.1 — Draft**
 
 ## Abstract
 
-Titan is a native desktop browser for Nostr-hosted static websites (nsites). It introduces a Bitcoin-native name registration protocol that permanently maps human-readable names to Nostr public keys using OP_RETURN transactions. Combined with the NIP-5A nsite protocol, Titan provides a fully decentralized web browsing experience with no reliance on DNS, certificate authorities, or traditional hosting infrastructure.
+The NSIT name protocol is a Bitcoin-native name registration system that permanently maps human-readable names to Nostr public keys using OP_RETURN transactions. Combined with the NIP-5A nsite protocol, it provides a fully decentralized web addressing layer with no reliance on DNS, certificate authorities, or traditional hosting infrastructure. Titan is the reference implementation — a native desktop browser that resolves `nsite://` URLs using NSIT names.
 
 ## 1. Problem
 
@@ -56,7 +56,7 @@ Titan solves this by anchoring name registrations in Bitcoin's blockchain — th
 
 ### 1.4 The Name Land Rush
 
-Because names are permanent and first-come-first-served, the launch of the Titan Name Protocol creates a one-time land rush. Unlike DNS where desirable names can be reclaimed when registrations lapse, a Titan name claimed today is claimed forever. There are no second chances.
+Because names are permanent and first-come-first-served, the launch of the NSIT name protocol creates a one-time land rush. Unlike DNS where desirable names can be reclaimed when registrations lapse, an NSIT name claimed today is claimed forever. There are no second chances.
 
 Consider: there are only 36 possible single-character names (`a`-`z`, `0`-`9`). Only ~1,300 two-character combinations. Common words like `bitcoin`, `wallet`, `news`, `shop`, `music` — each can only be claimed once. The first person to broadcast a valid registration transaction owns that name for as long as Bitcoin exists.
 
@@ -78,7 +78,7 @@ The supply is finite. The launch is fair. Early participants who understand this
 
 ### 2.2 Wire Format
 
-Every Titan name operation is encoded in a single OP_RETURN output:
+Every NSIT name operation is encoded in a single OP_RETURN output:
 
 ```
 Offset  Size  Field       Description

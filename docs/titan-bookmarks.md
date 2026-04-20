@@ -2,7 +2,7 @@
 
 Titan Bookmarks is a Nostr event kind published by the Titan browser
 to sync a user's bookmark list across devices. It is orthogonal to the
-Titan Name Protocol (NSIT) — they just happen to share the same
+NSIT name protocol — they just happen to share the same
 publisher (the built-in Titan signer) and the same `xx129` kind
 convention.
 

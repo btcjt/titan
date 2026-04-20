@@ -32,7 +32,7 @@ apps/titan-nsite/        nsite://titan — search, register, transfer, browse na
 services/nsit-indexer/   k8s service: watches Bitcoin blocks, publishes name index as Nostr events
 ```
 
-## Bitcoin Name Protocol
+## NSIT Name Protocol
 
 OP_RETURN wire format (80 bytes max):
 
@@ -185,7 +185,7 @@ Blossom: https://blossom.westernbtc.com
 
 - `docs/architecture.md` — full system architecture (browser, resolver, indexer, nsite, infra)
 - `docs/whitepaper.md` — protocol design and security model
-- `docs/name-protocol.md` — wire format spec + Nostr index event kinds
+- `docs/name-protocol.md` — NSIT wire format spec + Nostr index event kinds
 - `docs/titan-bookmarks.md` — Titan Bookmarks protocol (kind 10129, private, encrypted)
 - `docs/roadmap.md` — phased build plan with checkboxes
 - `docs/blog-announcement.md` — launch announcement draft

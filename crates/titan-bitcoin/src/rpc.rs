@@ -317,7 +317,7 @@ impl TxOutput {
 }
 
 impl Transaction {
-    /// Get the address of the first input (the "owner" for TNP purposes).
+    /// Get the address of the first input (the "owner" for NSIT purposes).
     pub fn first_input_address(&self) -> Option<&str> {
         self.vin
             .first()?
