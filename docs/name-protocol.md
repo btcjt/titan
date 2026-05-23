@@ -153,6 +153,38 @@ One event per action (register or transfer). These are never replaced — they a
 
 One per indexer pubkey. Updated after each block sync.
 
+### Name Claim Announcement — Kind 1 (optional, social feed)
+
+An indexer MAY also publish a standard kind-1 text note for each
+newly indexed registration. The kind-35129/1129/15129 events above
+are machine-readable; they don't surface in normal Nostr client
+feeds. A kind-1 companion makes a new claim visible in the indexer
+bot's follower timelines and (via a `p` tag on the new owner)
+delivers the news to the owner's mentions tab without requiring them
+to subscribe to a separate kind.
+
+Suggested shape, for cross-indexer consistency:
+
+- `content` — a short, human-readable line including the name, the
+  `nsite://<name>` URI, the owner as `nostr:<npub>`, and the on-chain
+  txid + block height.
+- `["p", "<owner-pubkey-hex>"]` — tags the new owner so the claim
+  shows up in their mentions tab.
+- `["t", "nsit"]`, `["t", "nsite"]` — topic tags so clients can
+  subscribe to a hashtag stream of NSIT activity.
+- `["r", "nsite://<name>"]` — the resolved URI.
+- `["a", "35129:<indexer-pubkey>:<name>"]` — NIP-19 addressable
+  coordinate pointing at the canonical kind-35129 record.
+
+Kind 1 is non-replaceable, so an indexer that re-publishes name
+records on restart MUST gate the announcement on "is this a name I
+have never indexed before" — otherwise every restart spams the feed
+with duplicates. The reference indexer hydrates its in-memory
+registry from existing kind-35129 events on boot and only announces
+names that aren't already in that set.
+
+Announcement filter: `{kinds: [1], authors: [indexerPubkey], "#t": ["nsit"]}`
+
 ### Query Pattern
 
 Clients use a race-then-linger strategy:

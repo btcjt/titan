@@ -98,6 +98,7 @@ npub → pubkey (bech32 decode)
 - **Kind 35129** (addressable, d=name): current name state — pubkey, owner UTXO, txid, block height
 - **Kind 1129** (regular): name history log — one event per action, never replaced, full chain of custody
 - **Kind 15129** (replaceable): index stats — block height, hash, total names
+- **Kind 1** (optional, social feed): announcement on each fresh name claim — tags the new owner via `p`, points back at the canonical kind-35129 via `a`, hashtagged `#nsit` / `#nsite`. Indexers MUST gate on "is this a genuinely new claim, not a restart-resync" to avoid spamming the feed; see `docs/name-protocol.md` for the full shape.
 - **Indexer pubkey**: `bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44`
 - Race-then-linger query: first relay response + 200ms linger window, newest event wins
 
