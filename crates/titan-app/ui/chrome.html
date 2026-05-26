@@ -103,12 +103,14 @@
     <div id="side-panel-resize" title="Drag to resize"></div>
     <div id="panel-header">
       <span id="panel-title"></span>
+      <button id="panel-close" title="Close panel">&times;</button>
     </div>
     <div id="panel-content">
       <!-- Menu view -->
       <div id="panel-menu" style="display:none;">
         <button class="menu-item" data-action="signer"><span class="menu-icon">&#x1F511;</span>Signer</button>
         <button class="menu-item" data-action="bookmarks"><span class="menu-icon">&#x1F516;</span>Bookmarks</button>
+        <button class="menu-item" data-action="downloads"><span class="menu-icon">&#x2B07;</span>Downloads</button>
         <div class="menu-separator"></div>
         <button class="menu-item" data-action="info"><span class="menu-icon">&#x1F512;</span>Site info</button>
         <div class="menu-separator"></div>
@@ -129,6 +131,14 @@
       <div id="panel-bookmarks" style="display:none;">
         <div id="bookmarks-list"></div>
         <div id="bookmarks-empty">No bookmarks yet. Click ☆ to save a site.</div>
+      </div>
+      <!-- Downloads view -->
+      <div id="panel-downloads" style="display:none;">
+        <div id="downloads-list"></div>
+        <div id="downloads-empty">No downloads yet.</div>
+        <div id="downloads-actions" style="display:none;">
+          <button id="downloads-clear" class="settings-btn-secondary">Clear completed</button>
+        </div>
       </div>
       <!-- Dev console view -->
       <div id="panel-console" style="display:none;">
@@ -284,12 +294,20 @@
           <div class="settings-hint">Default page on startup</div>
         </div>
         <div class="settings-section">
+          <label class="settings-label">Download Directory</label>
+          <input id="settings-download-dir" class="settings-input" type="text" spellcheck="false" placeholder="~/Downloads">
+          <div class="settings-hint">Where downloaded files are saved</div>
+        </div>
+        <div class="settings-section">
           <button id="settings-save" class="settings-btn">Save</button>
           <button id="settings-reset" class="settings-btn-secondary">Reset to Defaults</button>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- Toast notifications (anchored to bottom of chrome) -->
+  <div id="toast-container"></div>
 
   <script src="helpers.js"></script>
   <script src="chrome.js"></script>

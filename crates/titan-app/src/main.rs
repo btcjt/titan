@@ -11,6 +11,7 @@
 mod audit_log;
 mod bookmarks;
 mod devtools;
+mod downloads;
 mod log_forward;
 mod nip07;
 mod permissions;
@@ -22,7 +23,7 @@ use permissions::Permissions;
 use prompt_queue::PromptQueue;
 use serde::{Deserialize, Serialize};
 use signer::Signer;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use titan_resolver::Resolver;
@@ -146,6 +147,9 @@ struct Settings {
     /// that size. Clamped at load time to the sane range below.
     #[serde(default = "default_side_panel_width")]
     side_panel_width: u32,
+    /// Download directory. Defaults to the OS downloads folder.
+    #[serde(default = "default_download_dir")]
+    download_dir: String,
 }
 
 const DEFAULT_SIDE_PANEL_WIDTH: u32 = 280;
@@ -154,6 +158,16 @@ const MAX_SIDE_PANEL_WIDTH: u32 = 1400;
 
 fn default_side_panel_width() -> u32 {
     DEFAULT_SIDE_PANEL_WIDTH
+}
+
+fn default_download_dir() -> String {
+    directories::UserDirs::new()
+        .and_then(|u| u.download_dir().map(|d| d.to_string_lossy().to_string()))
+        .unwrap_or_else(|| {
+            directories::UserDirs::new()
+                .map(|u| u.home_dir().join("Downloads").to_string_lossy().to_string())
+                .unwrap_or_else(|| "~/Downloads".to_string())
+        })
 }
 
 impl Default for Settings {
@@ -174,6 +188,7 @@ impl Default for Settings {
             indexer_pubkey: "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44".to_string(),
             homepage: "titan".to_string(),
             side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
+            download_dir: default_download_dir(),
         }
     }
 }
@@ -193,6 +208,7 @@ struct AppState {
     prompt_queue: PromptQueue,
     audit_log: AuditLog,
     devtools: devtools::DevtoolsState,
+    downloads: downloads::DownloadManager,
 }
 
 impl AppState {
@@ -915,6 +931,79 @@ async fn devtools_clear_storage(
     };
     wv.eval(&code).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── Download Commands ──
+
+#[tauri::command]
+async fn list_downloads(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<downloads::Download>, String> {
+    Ok(state.downloads.list())
+}
+
+#[tauri::command]
+async fn remove_download(
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+) -> Result<(), String> {
+    state.downloads.remove(id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_downloads(
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.downloads.clear_completed();
+    Ok(())
+}
+
+#[tauri::command]
+async fn retry_download(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+) -> Result<(), String> {
+    let download = state.downloads.get(id).ok_or("Download not found")?;
+    if download.status != downloads::DownloadStatus::Failed {
+        return Err("Can only retry failed downloads".to_string());
+    }
+    let url = download.url.clone();
+    let filename = download.filename.clone();
+    state.downloads.remove(id);
+    let state_arc = state.inner().clone();
+    handle_nsite_download(&app, &state_arc, &url, &filename).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_download(
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+) -> Result<(), String> {
+    let download = state.downloads.get(id).ok_or("Download not found")?;
+    if download.status != downloads::DownloadStatus::Complete {
+        return Err("Download not complete".to_string());
+    }
+    open_file(&download.destination)
+}
+
+#[tauri::command]
+async fn show_download_in_folder(
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+) -> Result<(), String> {
+    let download = state.downloads.get(id).ok_or("Download not found")?;
+    reveal_in_folder(&download.destination)
+}
+
+#[tauri::command]
+async fn get_download_dir(
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let settings = state.settings.lock().unwrap();
+    Ok(settings.download_dir.clone())
 }
 
 // ── Site Info ──
@@ -1771,6 +1860,134 @@ fn url_decode(s: &str) -> String {
     result
 }
 
+// ── Download Helpers ──
+
+async fn handle_nsite_download(
+    app: &tauri::AppHandle,
+    state: &Arc<AppState>,
+    url: &str,
+    filename: &str,
+) {
+    let dl_dir = {
+        let settings = state.settings.lock().unwrap();
+        PathBuf::from(&settings.download_dir)
+    };
+    let _ = std::fs::create_dir_all(&dl_dir);
+    let dest = downloads::unique_filename(&dl_dir, filename);
+    let display_url = url.replace("nsite-content://", "nsite://");
+    let download = state.downloads.start_download(
+        url.to_string(),
+        display_url,
+        filename.to_string(),
+        dest.clone(),
+    );
+    let _ = app.emit("download-started", &download);
+
+    // Parse the nsite-content:// URL to get pubkey + path
+    let parsed = match url.strip_prefix("nsite-content://")
+        .or_else(|| url.strip_prefix("http://nsite-content."))
+    {
+        Some(rest) => rest,
+        None => {
+            // Try as nsite:// — convert to content form
+            url.strip_prefix("nsite://").unwrap_or(url)
+        }
+    };
+    let (host, path) = match parsed.find('/') {
+        Some(i) => (&parsed[..i], &parsed[i..]),
+        None => (parsed, "/"),
+    };
+
+    let (pubkey, site_name) = match parse_content_host(host) {
+        Some(p) => p,
+        None => {
+            state.downloads.mark_failed(download.id, "Invalid download URL".to_string());
+            let _ = app.emit("download-updated", ());
+            return;
+        }
+    };
+
+    state.downloads.mark_downloading(download.id);
+    let _ = app.emit("download-updated", ());
+
+    let resolver = match state.resolver().await {
+        Ok(r) => r,
+        Err(e) => {
+            state.downloads.mark_failed(download.id, e);
+            let _ = app.emit("download-updated", ());
+            return;
+        }
+    };
+
+    match resolver.resolve(&pubkey, path, site_name.as_deref()).await {
+        Ok(content) => {
+            let size = content.data.len() as u64;
+            if let Err(e) = std::fs::write(&dest, &content.data) {
+                state.downloads.mark_failed(download.id, e.to_string());
+            } else {
+                info!("download complete: {} ({} bytes) → {}", filename, size, dest.display());
+                state.downloads.mark_complete(download.id, Some(size));
+            }
+        }
+        Err(e) => {
+            state.downloads.mark_failed(download.id, format!("{e}"));
+        }
+    }
+    let _ = app.emit("download-updated", ());
+}
+
+fn open_file(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn reveal_in_folder(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = path.parent().unwrap_or(path);
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args(["/select,", &path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ── Tab Commands ──
 
 #[tauri::command]
@@ -1947,6 +2164,7 @@ fn create_tab_webview(
 ) -> Result<tauri::Webview, Box<dyn std::error::Error>> {
     let handle1 = app_handle.clone();
     let handle2 = app_handle.clone();
+    let handle_dl = app_handle.clone();
     let label_nav = label.to_string();
     let label_load = label.to_string();
 
@@ -2045,6 +2263,22 @@ fn create_tab_webview(
                             let _ = handle.emit("devtools-storage", value);
                         }
                     }
+                    "download-request" => {
+                        // Download request from content JS:
+                        // titan-cmd://download-request/<encoded-url>/<encoded-filename>
+                        let path = url.path();
+                        let parts: Vec<&str> = path.splitn(3, '/').collect();
+                        if parts.len() >= 3 {
+                            let download_url = url_decode(parts[1]);
+                            let filename = url_decode(parts[2]);
+                            let handle = handle1.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Some(state) = handle.try_state::<Arc<AppState>>() {
+                                    handle_nsite_download(&handle, &state, &download_url, &filename).await;
+                                }
+                            });
+                        }
+                    }
                     c if c.starts_with("tab-") => {
                         if let Ok(n) = c[4..].parse::<u32>() {
                             let _ = handle.emit("switch-tab-number", n);
@@ -2073,6 +2307,53 @@ fn create_tab_webview(
 
             debug!("blocked navigation to {url}");
             false
+        })
+        .on_download({
+            let handle = handle_dl.clone();
+            move |_webview, event| {
+                match event {
+                    tauri::webview::DownloadEvent::Requested { url, destination } => {
+                        // Prefer the webview's suggested filename (derived from
+                        // the <a download="..."> attribute or Content-Disposition
+                        // header) over parsing the URL — blob: URLs produce UUIDs
+                        // as filenames when parsed.
+                        let filename = destination.file_name()
+                            .and_then(|n| n.to_str())
+                            .filter(|n| !n.is_empty())
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| downloads::extract_filename_from_url(url.as_str()));
+                        if let Some(state) = handle.try_state::<Arc<AppState>>() {
+                            let dl_dir = {
+                                let settings = state.settings.lock().unwrap();
+                                PathBuf::from(&settings.download_dir)
+                            };
+                            let dest = downloads::unique_filename(&dl_dir, &filename);
+                            let display_url = url.as_str().replace("nsite-content://", "nsite://");
+                            let download = state.downloads.start_download(
+                                url.to_string(),
+                                display_url,
+                                filename,
+                                dest.clone(),
+                            );
+                            *destination = dest;
+                            let _ = handle.emit("download-started", &download);
+                        }
+                        true
+                    }
+                    tauri::webview::DownloadEvent::Finished { url, path: _, success } => {
+                        if let Some(state) = handle.try_state::<Arc<AppState>>() {
+                            if success {
+                                state.downloads.mark_complete_by_url(url.as_str());
+                            } else {
+                                state.downloads.mark_failed_by_url(url.as_str(), "Download failed".to_string());
+                            }
+                            let _ = handle.emit("download-updated", ());
+                        }
+                        true
+                    }
+                    _ => true,
+                }
+            }
         })
         .on_page_load(move |webview, payload| {
             if let tauri::webview::PageLoadEvent::Finished = payload.event() {
@@ -2378,6 +2659,45 @@ fn create_tab_webview(
                             window.WebSocket = TitanWebSocket;
                         }
                     })();
+
+                    // ── Download interception ──
+                    (function() {
+                        if (window.__titanDownloadHooked) return;
+                        window.__titanDownloadHooked = true;
+
+                        var DL_EXT = /\.(zip|tar|gz|bz2|xz|7z|rar|pdf|doc|docx|xls|xlsx|ppt|pptx|dmg|exe|msi|deb|rpm|apk|iso|bin|dat|csv|sql|db|sqlite|mp3|mp4|avi|mkv|mov|wav|flac|ogg|webm|aac|epub|mobi|conf|ovpn|txt|json|xml|yaml|yml|toml)$/i;
+
+                        document.addEventListener('click', function(e) {
+                            var anchor = e.target.closest ? e.target.closest('a') : null;
+                            if (!anchor) return;
+
+                            var href = anchor.href || '';
+                            var hasDownload = anchor.hasAttribute('download');
+                            var isNsite = href.indexOf('nsite-content://') === 0
+                                       || href.indexOf('nsite://') === 0;
+
+                            if (!isNsite) return;
+
+                            try {
+                                var path = new URL(href).pathname.toLowerCase();
+                                if (!hasDownload && !DL_EXT.test(path)) return;
+                            } catch (_) {
+                                if (!hasDownload) return;
+                            }
+
+                            e.preventDefault();
+                            e.stopPropagation();
+
+                            var filename = anchor.getAttribute('download')
+                                || href.split('/').pop()
+                                || 'download';
+                            var a = document.createElement('a');
+                            a.href = 'titan-cmd://download-request/'
+                                + encodeURIComponent(href) + '/'
+                                + encodeURIComponent(filename);
+                            a.click();
+                        }, true);
+                    })();
                 "#);
             }
         }),
@@ -2447,6 +2767,7 @@ fn main() {
     );
 
     let permissions = Permissions::load(data_dir.clone());
+    let download_manager = downloads::DownloadManager::new(data_dir.clone());
 
     let state = Arc::new(AppState {
         resolver: OnceCell::new(),
@@ -2462,6 +2783,7 @@ fn main() {
         prompt_queue: PromptQueue::new(),
         audit_log: AuditLog::new(),
         devtools: devtools::DevtoolsState::new(),
+        downloads: download_manager,
     });
 
     // Bookmark sync: spawn a one-shot startup task that handles three
@@ -2787,6 +3109,8 @@ fn main() {
             devtools_network_snapshot, devtools_network_clear,
             devtools_set_network_recording, devtools_get_network_recording,
             devtools_read_storage, devtools_delete_storage_key, devtools_clear_storage,
+            list_downloads, remove_download, clear_downloads, retry_download,
+            open_download, show_download_in_folder, get_download_dir,
             hide_content_webview, show_content_webview,
             check_for_update, install_update,
         ])

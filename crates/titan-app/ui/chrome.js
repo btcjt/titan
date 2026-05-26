@@ -21,6 +21,7 @@ const bookmarksEmpty = document.getElementById("bookmarks-empty");
 const consoleLog = document.getElementById("console-log");
 const consoleInput = document.getElementById("console-input");
 const panelSettings = document.getElementById("panel-settings");
+const panelDownloads = document.getElementById("panel-downloads");
 const tabList = document.getElementById("tab-list");
 
 // ── State ──
@@ -1020,6 +1021,7 @@ async function openPanel(name) {
   // Hide all panel views
   panelMenu.style.display = "none";
   panelBookmarks.style.display = "none";
+  panelDownloads.style.display = "none";
   panelConsole.style.display = "none";
   panelSettings.style.display = "none";
   panelInfo.style.display = "none";
@@ -1032,6 +1034,10 @@ async function openPanel(name) {
     panelTitle.textContent = "Bookmarks";
     panelBookmarks.style.display = "block";
     await renderBookmarks();
+  } else if (name === "downloads") {
+    panelTitle.textContent = "Downloads";
+    panelDownloads.style.display = "block";
+    await renderDownloads();
   } else if (name === "console") {
     panelTitle.textContent = "Developer Tools";
     panelConsole.style.display = "block";
@@ -1076,10 +1082,184 @@ function updatePanelButtonState() {
   // Menu button gets active when the menu panel itself is open, or
   // when any panel reachable from the menu is open
   const btnMenuEl = document.getElementById("btn-menu");
-  const menuPanels = ["menu", "signer", "bookmarks", "settings", "console"];
+  const menuPanels = ["menu", "signer", "bookmarks", "downloads", "settings", "console"];
   if (btnMenuEl) {
     btnMenuEl.classList.toggle("panel-active", menuPanels.includes(activePanel));
   }
+}
+
+// ── Downloads Panel ──
+
+async function renderDownloads() {
+  const downloads = await invoke("list_downloads");
+  const list = document.getElementById("downloads-list");
+  const empty = document.getElementById("downloads-empty");
+  const actions = document.getElementById("downloads-actions");
+
+  list.innerHTML = "";
+
+  if (downloads.length === 0) {
+    empty.style.display = "block";
+    actions.style.display = "none";
+    return;
+  }
+
+  empty.style.display = "none";
+  const hasCompleted = downloads.some(
+    (d) => d.status === "complete" || d.status === "failed"
+  );
+  actions.style.display = hasCompleted ? "block" : "none";
+
+  for (const dl of downloads) {
+    const item = document.createElement("div");
+    item.className = "download-item";
+    item.dataset.downloadId = dl.id;
+
+    const statusIcon =
+      dl.status === "complete"
+        ? "✅"
+        : dl.status === "failed"
+          ? "❌"
+          : "⏳";
+
+    const statusClass =
+      dl.status === "failed"
+        ? "download-status-failed"
+        : dl.status === "complete"
+          ? "download-status-complete"
+          : "download-status-pending";
+
+    let actionsHtml = "";
+    if (dl.status === "complete") {
+      actionsHtml =
+        '<button class="download-action" data-action="open" title="Open file">Open</button>' +
+        '<button class="download-action" data-action="reveal" title="Show in folder">Show</button>';
+    } else if (dl.status === "failed") {
+      actionsHtml =
+        '<button class="download-action" data-action="retry" title="Retry">Retry</button>';
+    }
+
+    const info = document.createElement("div");
+    info.className = "download-info";
+
+    const fname = document.createElement("div");
+    fname.className = "download-filename";
+    fname.textContent = dl.filename;
+    info.appendChild(fname);
+
+    const url = document.createElement("div");
+    url.className = "download-url";
+    url.textContent = dl.display_url;
+    info.appendChild(url);
+
+    const meta = document.createElement("div");
+    meta.className = "download-meta";
+    const statusSpan = document.createElement("span");
+    statusSpan.className = statusClass;
+    statusSpan.textContent = statusIcon + " " + dl.status;
+    meta.appendChild(statusSpan);
+    if (dl.bytes_total) {
+      const sizeSpan = document.createElement("span");
+      sizeSpan.className = "download-size";
+      sizeSpan.textContent = formatBytes(dl.bytes_total);
+      meta.appendChild(sizeSpan);
+    }
+    if (dl.error) {
+      const errSpan = document.createElement("span");
+      errSpan.className = "download-status-failed";
+      errSpan.textContent = dl.error;
+      meta.appendChild(errSpan);
+    }
+    info.appendChild(meta);
+
+    item.appendChild(info);
+
+    const itemActions = document.createElement("div");
+    itemActions.className = "download-item-actions";
+    itemActions.innerHTML =
+      actionsHtml +
+      '<button class="download-action download-remove" data-action="remove" title="Remove">×</button>';
+
+    for (const btn of itemActions.querySelectorAll(".download-action")) {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const action = btn.dataset.action;
+        const id = Number(item.dataset.downloadId);
+        try {
+          if (action === "open") await invoke("open_download", { id });
+          else if (action === "reveal")
+            await invoke("show_download_in_folder", { id });
+          else if (action === "retry") {
+            await invoke("retry_download", { id });
+            await renderDownloads();
+          } else if (action === "remove") {
+            await invoke("remove_download", { id });
+            await renderDownloads();
+          }
+        } catch (err) {
+          console.error("download action failed:", err);
+        }
+      });
+    }
+
+    item.appendChild(itemActions);
+    list.appendChild(item);
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  if (bytes < 1024 * 1024 * 1024)
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+}
+
+// ── Toast Notifications ──
+
+const toastContainer = document.getElementById("toast-container");
+
+function showToast(text, { icon = "", cssClass = "toast-pending", action = null, duration = 4000 } = {}) {
+  const el = document.createElement("div");
+  el.className = "toast " + cssClass;
+
+  const iconSpan = document.createElement("span");
+  iconSpan.className = "toast-icon";
+  iconSpan.textContent = icon;
+  el.appendChild(iconSpan);
+
+  const textSpan = document.createElement("span");
+  textSpan.className = "toast-text";
+  textSpan.textContent = text;
+  textSpan.title = text;
+  el.appendChild(textSpan);
+
+  if (action) {
+    const btn = document.createElement("button");
+    btn.className = "toast-action";
+    btn.textContent = action.label;
+    btn.addEventListener("click", action.onClick);
+    el.appendChild(btn);
+  }
+
+  const dismiss = document.createElement("button");
+  dismiss.className = "toast-dismiss";
+  dismiss.textContent = "×";
+  dismiss.addEventListener("click", () => removeToast(el));
+  el.appendChild(dismiss);
+
+  toastContainer.appendChild(el);
+
+  if (duration > 0) {
+    setTimeout(() => removeToast(el), duration);
+  }
+  return el;
+}
+
+function removeToast(el) {
+  if (!el.parentNode) return;
+  el.classList.add("toast-out");
+  el.addEventListener("animationend", () => el.remove(), { once: true });
 }
 
 // ── Dev Console ──
@@ -1714,6 +1894,7 @@ async function loadSettingsUI() {
   document.getElementById("settings-blossom").value = s.blossom_servers.join("\n");
   document.getElementById("settings-indexer").value = s.indexer_pubkey;
   document.getElementById("settings-homepage").value = s.homepage;
+  document.getElementById("settings-download-dir").value = s.download_dir || "";
 }
 
 async function saveSettings() {
@@ -1723,6 +1904,7 @@ async function saveSettings() {
     blossom_servers: lines("settings-blossom"),
     indexer_pubkey: document.getElementById("settings-indexer").value.trim(),
     homepage: document.getElementById("settings-homepage").value.trim() || "titan",
+    download_dir: document.getElementById("settings-download-dir").value.trim(),
   };
   await invoke("update_settings", { settings });
   log("info", "settings saved (restart to apply relay changes)");
@@ -1758,6 +1940,7 @@ btnBack.addEventListener("click", () => invoke("go_back"));
 btnForward.addEventListener("click", () => invoke("go_forward"));
 btnRefresh.addEventListener("click", () => invoke("refresh"));
 document.getElementById("btn-info").addEventListener("click", () => openPanel("info"));
+document.getElementById("panel-close").addEventListener("click", () => closePanel());
 btnStar.addEventListener("click", toggleBookmark);
 
 // ── Kebab Menu ──
@@ -1780,6 +1963,9 @@ for (const item of document.querySelectorAll(".menu-item")) {
         break;
       case "bookmarks":
         openPanel("bookmarks");
+        break;
+      case "downloads":
+        openPanel("downloads");
         break;
       case "info":
         openPanel("info");
@@ -1814,6 +2000,10 @@ for (const item of document.querySelectorAll(".menu-item")) {
 document.getElementById("btn-new-tab").addEventListener("click", createTab);
 document.getElementById("settings-save").addEventListener("click", saveSettings);
 document.getElementById("settings-reset").addEventListener("click", resetSettings);
+document.getElementById("downloads-clear").addEventListener("click", async () => {
+  await invoke("clear_downloads");
+  await renderDownloads();
+});
 
 // Page loaded — update address bar if from active tab
 listen("page-loaded", (event) => {
@@ -1874,6 +2064,40 @@ listen("bookmarks-changed", () => {
     renderBookmarks();
   }
   updateStarState();
+});
+
+listen("download-started", (event) => {
+  const dl = event.payload;
+  const name = dl && dl.filename ? dl.filename : "file";
+  showToast("Downloading " + name + "…", { icon: "⬇", cssClass: "toast-pending", duration: 3000 });
+  if (activePanel !== "downloads") {
+    openPanel("downloads");
+  } else {
+    renderDownloads();
+  }
+});
+listen("download-updated", async () => {
+  if (activePanel === "downloads") renderDownloads();
+  try {
+    const downloads = await invoke("list_downloads");
+    if (downloads.length > 0) {
+      const latest = downloads[0];
+      if (latest.status === "complete") {
+        showToast("Downloaded " + latest.filename, {
+          icon: "✅",
+          cssClass: "toast-complete",
+          duration: 5000,
+          action: {
+            label: "Open",
+            onClick: () => invoke("open_download", { id: latest.id }),
+          },
+        });
+      } else if (latest.status === "failed") {
+        const msg = latest.error ? latest.filename + " — " + latest.error : latest.filename;
+        showToast("Download failed: " + msg, { icon: "❌", cssClass: "toast-failed", duration: 6000 });
+      }
+    }
+  } catch (_) {}
 });
 
 listen("nsite-link-clicked", (event) => {

@@ -235,6 +235,51 @@ external tools.
 - fetch/XHR/WebSocket wrappers inject on `page_load`, so requests initiated by scripts in `<head>` before the page finishes loading may be missed
 - Content webview access happens via `webview.eval()` which has an implicit round-trip latency; fine for interactive use, not suitable for a high-frequency storage dashboard
 
+## Phase 12: Downloads (v0.1.9)
+
+Full download manager for saving files from nsite pages.
+
+**Download triggers**
+- [x] Tauri `on_download` hook on content webviews — catches native download triggers (Content-Disposition, blob URL downloads)
+- [x] JS click interception — injected into content pages, intercepts `<a download>` clicks and links to known file extensions on `nsite-content://` pages
+- [x] Both paths feed into the same `DownloadManager` backend
+
+**Download manager**
+- [x] `DownloadManager` with `Download`, `DownloadStatus` types (Pending → Downloading → Complete/Failed)
+- [x] Persistence to `downloads.json` (same pattern as bookmarks/settings)
+- [x] Collision-safe filenames — `unique_filename()` appends `(1)`, `(2)`, etc.
+- [x] Filename extraction from webview's suggested destination (supports blob URL downloads with `download` attribute)
+- [x] Filename sanitization — strips path traversal (`..`, `/`, `\`, `\0`)
+- [x] Configurable download directory in settings (defaults to system Downloads folder)
+
+**Downloads panel**
+- [x] Side panel view with filename, URL, status, size, and action buttons
+- [x] Open file / Show in folder / Retry / Remove per-download actions
+- [x] Clear completed button
+- [x] Auto-opens when a download starts
+- [x] Menu item in kebab menu
+
+**Toast notifications**
+- [x] Toast system anchored at bottom of chrome with slide-up animation
+- [x] "Downloading file..." toast on start
+- [x] "Downloaded file" toast with Open button on completion
+- [x] "Download failed" toast on failure
+- [x] Auto-dismiss with configurable duration
+
+**Panel close button**
+- [x] × button in panel header — works for all panels (Menu, Bookmarks, Downloads, Site Info, Signer, Settings, Developer Tools)
+
+**Platform helpers**
+- [x] `open_file()` — macOS `open`, Linux `xdg-open`, Windows `explorer`
+- [x] `reveal_in_folder()` — macOS `open -R`, Linux `xdg-open` parent, Windows `explorer /select,`
+
+**Tauri commands**
+- [x] `list_downloads`, `remove_download`, `clear_downloads`, `retry_download`
+- [x] `open_download`, `show_download_in_folder`, `get_download_dir`
+
+**Tests** (245 total: 195 titan-app + 32 bitcoin + 14 resolver + 4 types)
+- [x] 23 new download tests: status transitions, unique_filename, persistence round-trip, adversarial filenames (unicode, path traversal, very long names), concurrent ID generation
+
 ## Future
 
 ### Signer — deferred to v2+

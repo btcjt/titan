@@ -145,6 +145,7 @@ Blossom: https://blossom.westernbtc.com
 9. ~~Tabs, Console, Interactive Registration~~ (DONE — multi-tab, console forwarding, bitcoin-cli builder)
 10. Built-in Signer (IN PROGRESS — key management, window.nostr bridge, permissions + approval prompts, audit log, getRelays plumbing, auto-updater, CSP hardening done; auto-lock, encrypted file fallback remaining)
 11. ~~Developer Tools~~ (DONE — v0.1.7: three-tab dev console with Logs/Network/Application, ring-buffered network log with copy-as-cURL, fetch/XHR/WebSocket wrappers, `nsite-content://` + `titan-nostr://` request capture, localStorage/sessionStorage/cookies viewer via webview.eval readback, drag-to-resize side panel with persisted width, level + source filters on Rust log stream)
+12. ~~Downloads~~ (DONE — v0.1.9: download manager with `on_download` hook + JS click interception, blob URL filename from webview destination, toast notifications on download start/complete/fail, auto-open Downloads panel, panel close button, configurable download dir in settings, `downloads.json` persistence, platform-specific `open_file`/`reveal_in_folder`)
 
 ## Key Decisions Made
 
@@ -176,6 +177,18 @@ Blossom: https://blossom.westernbtc.com
 - Dev console network capture uses two paths: Rust protocol handlers (`nsite-content://`, `titan-nostr://`) push into the `devtools::DevtoolsState` ring buffer directly, and content-page JS wraps `fetch`/`XMLHttpRequest`/`WebSocket` at page load, posting events back to chrome via `titan-cmd://net-event/<json>` URLs intercepted by the navigation handler. Ring buffer capped at 500 events to bound memory on long-running sessions.
 - Dev console Application tab reads `localStorage`/`sessionStorage`/`document.cookie` from the active content webview via `webview.eval()` — injects a reader script that POSTs the snapshot back via `titan-cmd://devtools-storage/<json>`. Mutations (delete key, clear all) also go through `webview.eval()` for symmetry.
 - Side panel width is a CSS custom property (`--panel-width`) updated live during drag, persisted via a dedicated `update_side_panel_width` Tauri command to avoid races with concurrent Settings panel edits. Clamped to [280px, 1400px] both at the Rust layer (on save) and the JS layer (during drag).
+- Downloads use two trigger paths: Tauri's `on_download` hook on content webviews catches native download triggers (Content-Disposition, webview-initiated downloads), and injected JS intercepts `<a download>` clicks + links to known file extensions (`.zip`, `.pdf`, `.dmg`, etc.) on `nsite-content://` pages, routing them via `titan-cmd://download-request/`. Both paths feed into the same `DownloadManager` backend. The nsite download path resolves blobs through the existing resolver (cached if previously viewed), writes to the configurable download directory with collision-safe filenames (`file (1).zip`, etc.), and emits `download-started`/`download-updated` Tauri events to drive the panel UI.
+
+## Commands
+
+```bash
+cargo build                  # build everything
+cargo test                   # run all tests (245+)
+cargo test -p titan-app      # run browser tests only
+cargo tauri dev              # run the browser (dev mode)
+```
+
+Nix users: `direnv allow` first.
 
 ## Registered Names
 

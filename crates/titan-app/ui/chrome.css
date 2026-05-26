@@ -698,6 +698,20 @@ body.panel-resizing * {
   letter-spacing: 1.5px;
 }
 
+#panel-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+#panel-close:hover {
+  color: var(--text-primary);
+}
+
 #panel-content {
   flex: 1;
   overflow-y: auto;
@@ -1929,5 +1943,203 @@ body.panel-console #panel-console {
 .settings-btn-secondary:hover {
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+/* ── Downloads Panel ── */
+
+#downloads-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#downloads-actions {
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.download-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  transition: background 0.1s;
+}
+
+.download-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.download-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.download-filename {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.download-url {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: "SF Mono", "Fira Code", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.download-meta {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+.download-status-complete { color: #6b6; }
+.download-status-failed { color: #c66; }
+.download-status-pending { color: var(--amber); }
+
+.download-size {
+  color: var(--text-muted);
+}
+
+.download-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.download-item:hover .download-item-actions {
+  opacity: 1;
+}
+
+.download-action {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.download-action:hover {
+  color: var(--amber);
+  border-color: var(--text-muted);
+}
+
+.download-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.download-remove:hover {
+  color: #c44;
+}
+
+/* ── Toast Notifications ── */
+
+#toast-container {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  animation: toast-in 0.25s ease-out;
+  max-width: 420px;
+  min-width: 220px;
+}
+
+.toast.toast-out {
+  animation: toast-out 0.3s ease-in forwards;
+}
+
+.toast-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--amber);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.toast-action:hover {
+  border-color: var(--amber-dim);
+  background: var(--amber-glow);
+}
+
+.toast-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.toast-dismiss:hover {
+  color: var(--text-secondary);
+}
+
+.toast-complete .toast-icon { color: #6b6; }
+.toast-failed .toast-icon { color: #c66; }
+.toast-pending .toast-icon { color: var(--amber); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(12px); }
 }
 
