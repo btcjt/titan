@@ -1864,7 +1864,10 @@ function switchDevtoolsTab(name) {
 
   // Tab-specific onEnter actions
   if (name === "logs") {
-    setTimeout(() => consoleInput.focus(), 0);
+    setTimeout(() => {
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+      consoleInput.focus();
+    }, 0);
   } else if (name === "network") {
     // Refresh the snapshot on entry so the table reflects any events
     // recorded while the tab was hidden.

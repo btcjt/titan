@@ -215,6 +215,9 @@ struct AppState {
     audit_log: AuditLog,
     devtools: devtools::DevtoolsState,
     downloads: downloads::DownloadManager,
+    /// Maps download URL → download ID for in-flight native downloads.
+    /// Populated in on_download Requested, consumed in Finished.
+    pending_download_ids: std::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl AppState {
@@ -2341,14 +2344,54 @@ fn create_tab_webview(
                                 filename,
                                 dest.clone(),
                             );
-                            *destination = dest;
+                            let dl_id = download.id;
+                            state.pending_download_ids.lock().unwrap()
+                                .insert(url.to_string(), dl_id);
+                            *destination = dest.clone();
                             let _ = handle.emit("download-started", &download);
+
+                            // Blob URL downloads may never fire a Finished
+                            // event on macOS WebKit. Spawn a watchdog that
+                            // checks the destination file after a brief
+                            // delay and marks complete if it appeared.
+                            if url.as_str().starts_with("blob:") {
+                                let h = handle.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    if let Some(st) = h.try_state::<Arc<AppState>>() {
+                                        if let Some(dl) = st.downloads.get(dl_id) {
+                                            if dl.status == downloads::DownloadStatus::Pending
+                                                || dl.status == downloads::DownloadStatus::Downloading
+                                            {
+                                                if dest.exists() {
+                                                    let size = std::fs::metadata(&dest).ok().map(|m| m.len());
+                                                    st.downloads.mark_complete(dl_id, size);
+                                                } else {
+                                                    st.downloads.mark_failed(dl_id, "File not written".to_string());
+                                                }
+                                                let _ = h.emit("download-updated", ());
+                                            }
+                                        }
+                                    }
+                                });
+                            }
                         }
                         true
                     }
                     tauri::webview::DownloadEvent::Finished { url, path: _, success } => {
                         if let Some(state) = handle.try_state::<Arc<AppState>>() {
-                            if success {
+                            let id = state.pending_download_ids.lock().unwrap()
+                                .remove(url.as_str());
+                            if let Some(id) = id {
+                                if success {
+                                    let size = state.downloads.get(id)
+                                        .and_then(|d| std::fs::metadata(&d.destination).ok())
+                                        .map(|m| m.len());
+                                    state.downloads.mark_complete(id, size);
+                                } else {
+                                    state.downloads.mark_failed(id, "Download failed".to_string());
+                                }
+                            } else if success {
                                 state.downloads.mark_complete_by_url(url.as_str());
                             } else {
                                 state.downloads.mark_failed_by_url(url.as_str(), "Download failed".to_string());
@@ -2790,6 +2833,7 @@ fn main() {
         audit_log: AuditLog::new(),
         devtools: devtools::DevtoolsState::new(),
         downloads: download_manager,
+        pending_download_ids: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Bookmark sync: spawn a one-shot startup task that handles three
