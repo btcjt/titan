@@ -115,7 +115,8 @@ This gives fast perceived latency while still picking up fresher data from slowe
 ## Hardcoded Fallbacks
 
 Relays: wss://relay.westernbtc.com, wss://relay.primal.net, wss://relay.damus.io
-Blossom: https://blossom.westernbtc.com
+Discovery: wss://purplepag.es, wss://user.kindpag.es, wss://indexer.coracle.social
+Blossom: blossom.westernbtc.com, blossom.redundant.westernbtc.com, blossom.primal.net, blossom.data.haus, blossom.nmail.li, milo.nostria.app
 
 ## Caching Strategy
 

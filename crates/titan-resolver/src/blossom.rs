@@ -1,10 +1,11 @@
 //! Blossom blob fetching with SHA256 integrity verification.
 //!
 //! Blossom servers serve content-addressed blobs at `GET /<sha256hex>`.
-//! We verify the downloaded content matches the expected hash.
+//! All servers are raced in parallel — first verified response wins.
 
 use reqwest::Client;
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 /// HTTP client for fetching blobs from Blossom servers.
@@ -15,13 +16,17 @@ pub struct BlossomClient {
 impl BlossomClient {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 
-    /// Fetch a blob by SHA256 hash, trying each server in order.
+    /// Fetch a blob by SHA256 hash, racing all servers in parallel.
     ///
-    /// Returns the verified blob bytes, or an error if no server had a valid copy.
+    /// Returns the first verified blob bytes, or an error if every server failed.
     pub async fn fetch_blob(
         &self,
         hash: &str,
@@ -31,56 +36,80 @@ impl BlossomClient {
             return Err(BlossomError::NoServers);
         }
 
-        let mut last_err = BlossomError::NoServers;
+        if servers.len() == 1 {
+            let url = format!("{}/{}", servers[0].trim_end_matches('/'), hash);
+            debug!("fetching blob from {url}");
+            return self.fetch_and_verify(&url, hash).await;
+        }
+
+        let (tx, mut rx) = mpsc::channel::<Result<Vec<u8>, (String, BlossomError)>>(servers.len());
 
         for server in servers {
             let url = format!("{}/{}", server.trim_end_matches('/'), hash);
-            debug!("fetching blob from {url}");
+            let client = self.client.clone();
+            let expected = hash.to_string();
+            let server_name = server.clone();
+            let tx = tx.clone();
 
-            match self.fetch_and_verify(&url, hash).await {
+            tokio::spawn(async move {
+                debug!("fetching blob from {url}");
+                let result = fetch_and_verify_with(&client, &url, &expected).await;
+                let _ = tx.send(match result {
+                    Ok(bytes) => Ok(bytes),
+                    Err(e) => Err((server_name, e)),
+                }).await;
+            });
+        }
+        drop(tx);
+
+        let mut errors = Vec::new();
+        while let Some(result) = rx.recv().await {
+            match result {
                 Ok(bytes) => return Ok(bytes),
-                Err(e) => {
+                Err((server, e)) => {
                     warn!("failed to fetch blob from {server}: {e}");
-                    last_err = e;
+                    errors.push(e);
                 }
             }
         }
 
-        Err(last_err)
+        Err(errors.pop().unwrap_or(BlossomError::NoServers))
     }
 
     async fn fetch_and_verify(&self, url: &str, expected_hash: &str) -> Result<Vec<u8>, BlossomError> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| BlossomError::Http(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            return Err(BlossomError::Http(format!("HTTP {}", resp.status())));
-        }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| BlossomError::Http(e.to_string()))?;
-
-        // Verify SHA256
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let actual_hash = hex::encode(hasher.finalize());
-
-        if actual_hash != expected_hash {
-            return Err(BlossomError::HashMismatch {
-                expected: expected_hash.to_string(),
-                actual: actual_hash,
-            });
-        }
-
-        debug!("verified blob {expected_hash} ({} bytes)", bytes.len());
-        Ok(bytes.to_vec())
+        fetch_and_verify_with(&self.client, url, expected_hash).await
     }
+}
+
+async fn fetch_and_verify_with(client: &Client, url: &str, expected_hash: &str) -> Result<Vec<u8>, BlossomError> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| BlossomError::Http(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Err(BlossomError::Http(format!("HTTP {}", resp.status())));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| BlossomError::Http(e.to_string()))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual_hash = hex::encode(hasher.finalize());
+
+    if actual_hash != expected_hash {
+        return Err(BlossomError::HashMismatch {
+            expected: expected_hash.to_string(),
+            actual: actual_hash,
+        });
+    }
+
+    debug!("verified blob {expected_hash} ({} bytes)", bytes.len());
+    Ok(bytes.to_vec())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -105,7 +134,6 @@ mod tests {
         hasher.update(content);
         let hash = hex::encode(hasher.finalize());
 
-        // Verify our hash computation matches the known SHA256 of "hello world"
         assert_eq!(
             hash,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"

@@ -181,9 +181,15 @@ impl Default for Settings {
             discovery_relays: vec![
                 "wss://purplepag.es".to_string(),
                 "wss://user.kindpag.es".to_string(),
+                "wss://indexer.coracle.social".to_string(),
             ],
             blossom_servers: vec![
                 "https://blossom.westernbtc.com".to_string(),
+                "https://blossom.redundant.westernbtc.com".to_string(),
+                "https://blossom.primal.net".to_string(),
+                "https://blossom.data.haus".to_string(),
+                "https://blossom.nmail.li".to_string(),
+                "https://milo.nostria.app".to_string(),
             ],
             indexer_pubkey: "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44".to_string(),
             homepage: "titan".to_string(),

@@ -27,26 +27,32 @@ use relay::RelayPool;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-/// Hardcoded fallback relays.
+/// Hardcoded fallback relays (mirrors @repo/nostr-config DEFAULT_PUBLISH_RELAYS).
 pub const FALLBACK_RELAYS: &[&str] = &[
     "wss://relay.westernbtc.com",
     "wss://relay.primal.net",
     "wss://relay.damus.io",
 ];
 
-/// Fallback Blossom servers for blob fetching.
+/// Fallback Blossom servers for blob fetching (mirrors @repo/nostr-config DEFAULT_BLOSSOM_SET).
 pub const FALLBACK_BLOSSOM_SERVERS: &[&str] = &[
     "https://blossom.westernbtc.com",
+    "https://blossom.redundant.westernbtc.com",
+    "https://blossom.primal.net",
+    "https://blossom.data.haus",
+    "https://blossom.nmail.li",
+    "https://milo.nostria.app",
 ];
 
 /// Default NSIT indexer pubkey (signs kind 35129/15129 events).
 pub const INDEXER_PUBKEY_HEX: &str =
     "bec1a370130fed4fb9f78f9efc725b35104d827470e75573558a87a9ac5cde44";
 
-/// Default discovery relays.
+/// Default discovery relays (mirrors @repo/nostr-config DISCOVERY_RELAYS).
 pub const DEFAULT_DISCOVERY_RELAYS: &[&str] = &[
     "wss://purplepag.es",
     "wss://user.kindpag.es",
+    "wss://indexer.coracle.social",
 ];
 
 /// Configuration for the resolver.
